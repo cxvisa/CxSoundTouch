@@ -4,6 +4,19 @@ C++26 replacement for the original `klove.sh` + `loop.py` scripts. Plays interne
 SoundTouch after the SoundTouch cloud shutdown (early 2026), which broke the speaker's own preset
 buttons.
 
+## What it has been tested with
+
+So far only a **SoundTouch 30**, and only **internet radio stations** streamed through `control`
+(the stations in `streams.json`). Other SoundTouch models have the same Web API and should work, but
+have not been tried.
+
+The speaker's other sources, such as **Bluetooth, AUX and AirPlay 2** (on a speaker that has it),
+are not integrated yet; that is planned. They should already work as they always have, since they do
+not depend on the Bose cloud, and `control` stays out of their way. While the speaker is on one of
+them, `control` does not resume a station over it, push titles, or handle the remote's skip buttons,
+which stay with that source. Pressing a preset still switches to its station, as it should. None of
+this has been tried with `control` running yet.
+
 ## Build
 
 ```bash

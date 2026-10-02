@@ -1,8 +1,7 @@
 # SoundTouch C++ Controller
 
-C++26 replacement for the original `klove.sh` + `loop.py` scripts. Plays internet radio on a Bose
-SoundTouch after the SoundTouch cloud shutdown (early 2026), which broke the speaker's own preset
-buttons.
+A C++26 controller that plays internet radio on a Bose SoundTouch after the SoundTouch cloud
+shutdown (early 2026), which broke the speaker's own preset buttons.
 
 ## What it has been tested with
 

@@ -12,8 +12,9 @@ writable, and logs to the journal.
 | Data | `/var/lib/soundtouch`: `streams.json`, `devices.json`, `state.json` |
 
 `/var/lib/soundtouch` is a symlink that systemd creates to `/var/lib/private/soundtouch`, which is
-where the files really are. At start, systemd gives that directory and everything in it to the
-service's user.
+where the files really are. The service runs as a user systemd makes up for it each time it
+starts. On the host its files show as owned by `nobody` (65534); systemd maps that to the service's
+user (systemd 258 and later), so it can read and write them.
 
 ## Install
 
@@ -80,9 +81,11 @@ journalctl -u soundtouch --since today
 ```
 
 To change `streams.json` or `devices.json`, edit them in `/var/lib/private/soundtouch` with `sudo`,
-then restart. A file added later as root is not handed to the service's user again (systemd only
-does that when the directory itself is not the service's), so make it readable:
+then restart. The service only reads those two, so a file put there by root just has to be readable:
 `sudo chmod 0644 /var/lib/private/soundtouch/*.json`.
+
+The speaker's address comes from `devices.json`, or `192.168.3.53` without one. If the speaker gets
+its address by DHCP, give it a reservation in the router, or the service loses it when it changes.
 
 ## Remove
 

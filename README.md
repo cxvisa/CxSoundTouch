@@ -11,14 +11,16 @@ So far only a **SoundTouch 30**, and only **internet radio stations** streamed t
 have not been tried.
 
 The speaker's other sources, such as **Bluetooth, AUX and AirPlay**, are not integrated yet; that is
-planned. Which of these a speaker has depends on its model, series and firmware, so check Bose's
+planned. They should already work as they always have, since they do not depend on the Bose cloud,
+and `control` stays out of their way. While the speaker is on one of them, `control` does not resume
+a station over it, push titles, or handle the remote's skip buttons, which stay with that source.
+Pressing a preset still switches to its station, as it should. None of this has been tried with
+`control` running yet.
+
+Which of these sources a speaker has depends on its model, series and firmware, so check Bose's
 support site for your hardware. For example, on a SoundTouch 30 Series III, AirPlay 2 came with
 firmware 24.0.7 (February 2020), so the last release, 27.0.6, has it; earlier models may have only
-the original AirPlay. They should already work as they always have, since they do
-not depend on the Bose cloud, and `control` stays out of their way. While the speaker is on one of
-them, `control` does not resume a station over it, push titles, or handle the remote's skip buttons,
-which stay with that source. Pressing a preset still switches to its station, as it should. None of
-this has been tried with `control` running yet.
+the original AirPlay.
 
 ## Build
 

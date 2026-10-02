@@ -1,5 +1,5 @@
 # Build output
-soundtouch
+cxstcc
 *.o
 *.d
 

@@ -24,7 +24,7 @@ the original AirPlay.
 ## Build
 
 ```bash
-make          # build the soundtouch binary
+make          # build the cxstcc binary (cx sound touch c++ controller)
 make clean
 ```
 
@@ -33,35 +33,35 @@ Requires the Fedora packages `libwebsockets-devel`, `pugixml-devel`, `json-devel
 ## Usage
 
 ```bash
-./soundtouch discover --save     # find speakers, write devices.json
-./soundtouch devices             # show saved speakers and which is default
-./soundtouch set-default <id>    # change the default speaker
+./cxstcc discover --save     # find speakers, write devices.json
+./cxstcc devices             # show saved speakers and which is default
+./cxstcc set-default <id>    # change the default speaker
 
-./soundtouch list                # list streams from streams.json
-./soundtouch play klove          # play a stream by name
-./soundtouch play klove-90s
-./soundtouch play klove --song   # ...with the current song on the display (goes stale)
-./soundtouch stop
-./soundtouch status              # raw /nowPlaying
+./cxstcc list                # list streams from streams.json
+./cxstcc play klove          # play a stream by name
+./cxstcc play klove-90s
+./cxstcc play klove --song   # ...with the current song on the display (goes stale)
+./cxstcc stop
+./cxstcc status              # raw /nowPlaying
 
-./soundtouch presets             # presets stored on the speaker
-./soundtouch program-presets     # store every preset declared in streams.json
-./soundtouch save <1-6>          # store the currently playing stream as a preset
-./soundtouch save 4 klove-90s    # store a named stream as a preset
-./soundtouch select <1-6>        # trigger a preset the way the button does
+./cxstcc presets             # presets stored on the speaker
+./cxstcc program-presets     # store every preset declared in streams.json
+./cxstcc save <1-6>          # store the currently playing stream as a preset
+./cxstcc save 4 klove-90s    # store a named stream as a preset
+./cxstcc select <1-6>        # trigger a preset the way the button does
 
-./soundtouch nowplaying          # current song on whatever is playing
-./soundtouch nowplaying --watch  # print each song as it changes
-./soundtouch nowplaying --interval 30   # sample every 30s instead of staying connected
+./cxstcc nowplaying          # current song on whatever is playing
+./cxstcc nowplaying --watch  # print each song as it changes
+./cxstcc nowplaying --interval 30   # sample every 30s instead of staying connected
 
-./soundtouch control             # watch for preset buttons and take over playback
-./soundtouch control --update-track-info              # ...and keep the song on the display
-./soundtouch control --update-track-info --no-proxy   # same, without the local relay
-./soundtouch control --no-resume # never start a preset by itself (see below)
-./soundtouch control --relay-port 9900   # if 8899 is taken (or SOUNDTOUCH_RELAY_PORT=9900)
-./soundtouch control --update-track-info --title-offset -4   # push titles 4 s earlier (or SOUNDTOUCH_TITLE_OFFSET)
-./soundtouch control --update-track-info --relay-buffer 64   # keep more for long pauses (or SOUNDTOUCH_RELAY_BUFFER)
-./soundtouch --data-dir ~/st control     # config and state elsewhere (or SOUNDTOUCH_DATA_DIR)
+./cxstcc control             # watch for preset buttons and take over playback
+./cxstcc control --update-track-info              # ...and keep the song on the display
+./cxstcc control --update-track-info --no-proxy   # same, without the local relay
+./cxstcc control --no-resume # never start a preset by itself (see below)
+./cxstcc control --relay-port 9900   # if 8899 is taken (or SOUNDTOUCH_RELAY_PORT=9900)
+./cxstcc control --update-track-info --title-offset -4   # push titles 4 s earlier (or SOUNDTOUCH_TITLE_OFFSET)
+./cxstcc control --update-track-info --relay-buffer 64   # keep more for long pauses (or SOUNDTOUCH_RELAY_BUFFER)
+./cxstcc --data-dir ~/st control     # config and state elsewhere (or SOUNDTOUCH_DATA_DIR)
 ```
 
 Commands act on the default speaker from `devices.json`, falling back to `192.168.3.53` when that
@@ -118,7 +118,7 @@ the one you reach for most, give it a preset that is not a prefix of anything.
 `streams.json` is the source of truth. After editing it, run:
 
 ```bash
-./soundtouch program-presets
+./cxstcc program-presets
 ```
 
 This works out which buttons the configuration depends on — as presets in their own right *and* as

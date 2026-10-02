@@ -180,27 +180,27 @@ RUN case "${PIE}" in yes) LINK="-static" ;; *) LINK="-static -no-pie" ;; esac &&
         CXXFLAGS="-std=c++26 -Wall -Wextra -Werror -pedantic-errors -O2 -ffunction-sections -fdata-sections" \
         LDFLAGS="${LINK} -static-libstdc++ -static-libgcc -Wl,--gc-sections -Wl,-z,stack-size=8388608 \
                  $(pkg-config --static --libs libcurl) -lwebsockets -lpugixml" && \
-    ls -l soundtouch && \
-    strip --strip-all soundtouch && \
-    ls -l soundtouch && \
-    file soundtouch && \
-    file soundtouch | grep -Eq 'statically linked|static-pie linked' && \
-    if readelf -d soundtouch | grep -q NEEDED; then echo "dynamic dependency left" >&2; exit 1; fi && \
+    ls -l cxstcc && \
+    strip --strip-all cxstcc && \
+    ls -l cxstcc && \
+    file cxstcc && \
+    file cxstcc | grep -Eq 'statically linked|static-pie linked' && \
+    if readelf -d cxstcc | grep -q NEEDED; then echo "dynamic dependency left" >&2; exit 1; fi && \
     mkdir -p /rootfs/data /rootfs/etc/ssl/certs && \
-    cp soundtouch /rootfs/soundtouch && \
+    cp cxstcc /rootfs/cxstcc && \
     cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt
 
 # ---------------------------------------------------------------------------------------------
 FROM scratch
 
-COPY --from=build /rootfs/soundtouch /soundtouch
+COPY --from=build /rootfs/cxstcc /cxstcc
 COPY --from=build /rootfs/etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=1000:1000 /rootfs/data /data
 
 USER 1000:1000
 WORKDIR /data
 
-# No STOPSIGNAL: soundtouch handles SIGTERM, docker stop's default, itself, even as PID 1.
+# No STOPSIGNAL: cxstcc handles SIGTERM, docker stop's default, itself, even as PID 1.
 
-ENTRYPOINT ["/soundtouch"]
+ENTRYPOINT ["/cxstcc"]
 

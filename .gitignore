@@ -1,0 +1,8 @@
+# Build output
+soundtouch
+*.o
+*.d
+
+# Written at run time, specific to the machine and speaker
+devices.json
+state.json

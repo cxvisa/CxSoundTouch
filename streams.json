@@ -1,0 +1,67 @@
+{
+  "combo_window_ms": 700,
+  "streams": [
+    {
+      "name": "klove",
+      "display_name": "K-LOVE",
+      "description": "K-LOVE - Positive, Encouraging K-LOVE",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love/iheart/aac",
+      "preset": 1
+    },
+    {
+      "name": "air1",
+      "display_name": "Air1",
+      "description": "Air1 - Positive Hits",
+      "url": "http://maestro.emfcdn.com/stream_for/air1/iheart/aac",
+      "preset": 2
+    },
+    {
+      "name": "klove-live",
+      "display_name": "K-LOVE Live",
+      "description": "K-LOVE Live",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love-live/iheart/aac"
+    },
+    {
+      "name": "klove-70s",
+      "display_name": "K-LOVE 70s",
+      "description": "K-LOVE 70s - Hits from the 70s",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love-70s/iheart/aac",
+      "preset": 11
+    },
+    {
+      "name": "klove-80s",
+      "display_name": "K-LOVE 80s",
+      "description": "K-LOVE 80s - Hits from the 80s",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love-80s/iheart/aac",
+      "preset": 12
+    },
+    {
+      "name": "klove-90s",
+      "display_name": "K-LOVE 90s",
+      "description": "K-LOVE 90s - Hits from the 90s",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love-90s/iheart/aac",
+      "preset": 13
+    },
+    {
+      "name": "klove-2000s",
+      "display_name": "K-LOVE 2000s",
+      "description": "K-LOVE 2000s - Hits from the 2000s",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love-2000s/iheart/aac",
+      "preset": 14
+    },
+    {
+      "name": "klove-2010s",
+      "display_name": "K-LOVE 2010s",
+      "description": "K-LOVE 2010s - Hits from the 2010s",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love-2010s/iheart/aac",
+      "preset": 15
+    },
+    {
+      "name": "klove-christmas",
+      "display_name": "K-LOVE Christmas",
+      "description": "K-LOVE Christmas - Holiday Music",
+      "url": "http://maestro.emfcdn.com/stream_for/k-love-christmas/iheart/aac",
+      "preset": 111
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-# soundtouch control as a system service: starts at boot, comes back if it dies.
+# cxstcc control as a system service: starts at boot, comes back if it dies.
 # How to install it: systemd/README.md (or: make && sudo make install install-service).
 #
 # Settings are in /etc/soundtouch/soundtouch.env. streams.json, devices.json and state.json live in
@@ -15,7 +15,7 @@ After=network-online.target
 Type=exec
 Environment=SOUNDTOUCH_DATA_DIR=/var/lib/soundtouch
 EnvironmentFile=-/etc/soundtouch/soundtouch.env
-ExecStart=/usr/local/bin/soundtouch control --update-track-info $SOUNDTOUCH_OPTIONS
+ExecStart=/usr/local/bin/cxstcc control --update-track-info $SOUNDTOUCH_OPTIONS
 
 # SIGTERM stops it cleanly in well under a second; a second signal quits at once.
 Restart=on-failure

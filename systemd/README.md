@@ -1,12 +1,12 @@
 # Running `control` as a system service
 
-`soundtouch.service` runs `soundtouch control --update-track-info` at boot and restarts it if it
+`soundtouch.service` runs `cxstcc control --update-track-info` at boot and restarts it if it
 dies. It runs as its own unprivileged user (`DynamicUser=yes`) with only its state directory
 writable, and logs to the journal.
 
 | What | Where |
 |---|---|
-| Binary | `/usr/local/bin/soundtouch` |
+| Binary | `/usr/local/bin/cxstcc` |
 | Unit | `/etc/systemd/system/soundtouch.service` |
 | Settings | `/etc/soundtouch/soundtouch.env` (title offset, relay buffer and port, extra options) |
 | Data | `/var/lib/soundtouch`: `streams.json`, `devices.json`, `state.json` |
@@ -33,9 +33,9 @@ Or by hand, step by step:
 
 ```bash
 # 1. The binary.
-sudo install -D -m 0755 soundtouch /usr/local/bin/soundtouch
+sudo install -D -m 0755 cxstcc /usr/local/bin/cxstcc
 
-# 2. The settings. Edit them afterwards, e.g. SOUNDTOUCH_TITLE_OFFSET=-3.1.
+# 2. The settings (title offset -3.1 by default). Edit them afterwards as needed.
 sudo install -D -m 0644 systemd/soundtouch.env /etc/soundtouch/soundtouch.env
 
 # 3. The data directory, seeded before the first start. devices.json and state.json are optional:
@@ -54,7 +54,7 @@ systemd-analyze verify /etc/systemd/system/soundtouch.service
 Without a `devices.json`, commands use `192.168.3.53`. To find the speaker instead:
 
 ```bash
-sudo /usr/local/bin/soundtouch --data-dir /var/lib/private/soundtouch discover --save
+sudo /usr/local/bin/cxstcc --data-dir /var/lib/private/soundtouch discover --save
 ```
 
 ## Start
@@ -90,5 +90,5 @@ does that when the directory itself is not the service's), so make it readable:
 sudo systemctl disable --now soundtouch
 sudo rm /etc/systemd/system/soundtouch.service
 sudo systemctl daemon-reload
-# and, if wanted: /etc/soundtouch, /var/lib/private/soundtouch, /usr/local/bin/soundtouch
+# and, if wanted: /etc/soundtouch, /var/lib/private/soundtouch, /usr/local/bin/cxstcc
 ```

@@ -3,7 +3,7 @@ CXXFLAGS := -std=c++26 -Wall -Wextra -Werror -pedantic-errors -O2
 DEPFLAGS := -MMD -MP
 LDFLAGS  := -lcurl -lwebsockets -lpugixml
 
-TARGET   := soundtouch
+TARGET   := cxstcc
 SOURCES  := main.cpp SoundTouchClient.cpp WebSocketListener.cpp StreamConfig.cpp DeviceDiscovery.cpp IcyDemuxer.cpp IcyReader.cpp StreamProxy.cpp
 OBJECTS  := $(SOURCES:.cpp=.o)
 

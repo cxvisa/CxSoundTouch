@@ -1,8 +1,25 @@
 # SoundTouch C++ Controller
 
-C++26 replacement for the original `klove.sh` + `loop.py` scripts. Plays internet radio on a Bose
-SoundTouch after the SoundTouch cloud shutdown (early 2026), which broke the speaker's own preset
-buttons.
+A C++26 controller that plays internet radio on a Bose SoundTouch after the SoundTouch cloud
+shutdown (early 2026), which broke the speaker's own preset buttons.
+
+## What it has been tested with
+
+So far only a **SoundTouch 30**, and only **internet radio stations** streamed through `control`
+(the stations in `streams.json`). Other SoundTouch models have the same Web API and should work, but
+have not been tried.
+
+The speaker's other sources, such as **Bluetooth, AUX and AirPlay**, are not integrated yet; that is
+planned. They should already work as they always have, since they do not depend on the Bose cloud,
+and `control` stays out of their way. While the speaker is on one of them, `control` does not resume
+a station over it, push titles, or handle the remote's skip buttons, which stay with that source.
+Pressing a preset still switches to its station, as it should. None of this has been tried with
+`control` running yet.
+
+Which of these sources a speaker has depends on its model, series and firmware, so check Bose's
+support site for your hardware. For example, on a SoundTouch 30 Series III, AirPlay 2 came with
+firmware 24.0.7 (February 2020), so the last release, 27.0.6, has it; earlier models may have only
+the original AirPlay.
 
 ## Build
 

@@ -10,7 +10,7 @@ OBJECTS  := $(SOURCES:.cpp=.o)
 # Each object's header dependencies, written by the compiler as it builds.
 DEPENDS  := $(OBJECTS:.o=.d)
 
-.PHONY: all clean container install install-service
+.PHONY: all clean container install install-service deps-fedora
 
 all: $(TARGET)
 
@@ -22,6 +22,15 @@ $(TARGET): $(OBJECTS)
 
 clean:
 	rm -f $(OBJECTS) $(DEPENDS) $(TARGET)
+
+# The Fedora packages the build needs: sudo make deps-fedora. dnf asks before installing anything,
+# and skips what is already there; DNF="dnf -y" to not be asked. Docker, for make container, is
+# left out: Fedora's moby-engine and Docker's own docker-ce conflict, so install whichever you use.
+FEDORA_DEPS := gcc-c++ make libcurl-devel libwebsockets-devel pugixml-devel json-devel
+DNF         := dnf
+
+deps-fedora:
+	$(DNF) install $(FEDORA_DEPS)
 
 # Installing as a system service: see systemd/README.md. Neither target enables or starts it.
 PREFIX    := /usr/local

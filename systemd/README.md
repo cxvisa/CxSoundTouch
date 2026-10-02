@@ -14,7 +14,7 @@ writable, and logs to the journal.
 `/var/lib/soundtouch` is a symlink that systemd creates to `/var/lib/private/soundtouch`, which is
 where the files really are. The service runs as a user systemd makes up for it each time it
 starts. On the host its files show as owned by `nobody` (65534); systemd maps that to the service's
-user (systemd 258 and later), so it can read and write them.
+user (as seen with systemd 259), so it can read and write them.
 
 ## Install
 

@@ -28,7 +28,10 @@ make          # build the cxstcc binary (cx sound touch c++ controller)
 make clean
 ```
 
-Requires the Fedora packages `libwebsockets-devel`, `pugixml-devel`, `json-devel` and libcurl.
+On Fedora, `sudo make deps-fedora` installs what the build needs: `gcc-c++`, `make`,
+`libcurl-devel`, `libwebsockets-devel`, `pugixml-devel` and `json-devel`. dnf lists them and asks
+before installing. A minimal install may lack `make` itself: `sudo dnf install make` first.
+`make container` also needs Docker, which this leaves to you.
 
 ## Usage
 

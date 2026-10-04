@@ -3,6 +3,31 @@
 A C++26 controller that plays internet radio on a Bose SoundTouch after the SoundTouch cloud
 shutdown (early 2026), which broke the speaker's own preset buttons.
 
+## Features
+
+- **Preset buttons work again:** the six buttons, and two- or three-digit button combos (up to 258
+  presets), play the internet radio stations listed in `streams.json`.
+- **Song title and artist on the display,** changing as each song starts (~1.2 s gap per song).
+- **Pause and Play on the remote** carry on where it stopped, for pauses up to ~33 minutes on
+  64 kbps stations.
+- **⏭ and ⏮ on the remote** go to the next song, back to the start of the song, or to the previous
+  song.
+- **Starts the last station again by itself** at start-up and after an unexpected stop, but never
+  over a pause, standby or another source; reconnects when the speaker reboots.
+- **Command line** to find speakers, play, stop, see what is playing and program the presets
+  ([Usage](#usage)).
+- **Runs as a systemd service** ([systemd/README.md](systemd/README.md)) or a static container
+  image, ~1 MB to download ([Container](#container)).
+
+Titles, pause and skip need `control --update-track-info`, which is how the service runs it.
+
+**Not supported or not tested yet:**
+
+- Tested only on a SoundTouch 30 (firmware 27.0.6) with internet radio; other models are untested.
+- Bluetooth, AUX and AirPlay are not integrated yet; they should keep working as before
+  ([details](#what-it-has-been-tested-with)).
+- No album art, and changing station takes ~5 s.
+
 ## What it has been tested with
 
 So far only a **SoundTouch 30**, and only **internet radio stations** streamed through `control`
@@ -436,6 +461,7 @@ docker run -d --name soundtouch --restart unless-stopped --init --network host \
 - `StreamProxy.{h,cpp}` — the relay used by `control --update-track-info`
 - `Say.h` — output written a line at a time, so threads' lines never mix
 - `container/Dockerfile` — the static image (`make container`)
+- `systemd/` — the service unit, its settings file and the install steps (`systemd/README.md`)
 
 ## Ports
 

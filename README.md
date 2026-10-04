@@ -3,6 +3,11 @@
 A C++26 controller that plays internet radio on a Bose SoundTouch after the SoundTouch cloud
 shutdown (early 2026), which broke the speaker's own preset buttons.
 
+Unlike many open-source alternatives, it does not emulate the retired Bose cloud services or
+redirect the speaker to replacements for them. It uses only what the speaker itself provides on the
+local network (its Web API, UPnP and event stream) and fetches the stations from their own servers.
+Nothing depends on the Bose cloud, and the speaker's firmware and server settings stay untouched.
+
 ## Features
 
 - **Preset buttons work again:** the six buttons, and two- or three-digit button combos (up to 258

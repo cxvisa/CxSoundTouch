@@ -1,0 +1,5 @@
+# The build needs only the sources and the Makefile.
+*
+!Makefile
+!*.cpp
+!*.h

@@ -1,0 +1,483 @@
+# SoundTouch C++ Controller
+
+A C++26 controller that plays internet radio on a Bose SoundTouch after the SoundTouch cloud
+shutdown (early 2026), which broke the speaker's own preset buttons.
+
+Unlike many open-source alternatives, it does not emulate the retired Bose cloud services or
+redirect the speaker to replacements for them. It uses only what the speaker itself provides on the
+local network (its Web API, UPnP and event stream) and fetches the stations from their own servers.
+Nothing depends on the Bose cloud, and the speaker's firmware and server settings stay untouched.
+
+## Features
+
+- **Preset buttons work again:** the six buttons, and two- or three-digit button combos (up to 258
+  presets), play the internet radio stations listed in `streams.json`.
+- **Song title and artist on the display,** changing as each song starts (~1.2 s gap per song).
+- **Pause and Play on the remote** carry on where it stopped, for pauses up to ~33 minutes on
+  64 kbps stations.
+- **⏭ and ⏮ on the remote** go to the next song, back to the start of the song, or to the previous
+  song.
+- **Starts the last station again by itself** at start-up and after an unexpected stop, but never
+  over a pause, standby or another source; reconnects when the speaker reboots.
+- **Command line** to find speakers, play, stop, see what is playing and program the presets
+  ([Usage](#usage)).
+- **Runs as a systemd service** ([systemd/README.md](systemd/README.md)) or a static container
+  image, ~1 MB to download ([Container](#container)).
+
+Titles, pause and skip need `control --update-track-info`, which is how the service runs it.
+
+**Not supported or not tested yet:**
+
+- Tested only on a SoundTouch 30 (firmware 27.0.6) with internet radio; other models are untested.
+- Bluetooth, AUX and AirPlay are not integrated yet; they should keep working as before
+  ([details](#what-it-has-been-tested-with)).
+- No album art, and changing station takes ~5 s.
+
+## What it has been tested with
+
+So far only a **SoundTouch 30**, and only **internet radio stations** streamed through `control`
+(the stations in `streams.json`). Other SoundTouch models have the same Web API and should work, but
+have not been tried.
+
+The speaker's other sources, such as **Bluetooth, AUX and AirPlay**, are not integrated yet; that is
+planned. They should already work as they always have, since they do not depend on the Bose cloud,
+and `control` stays out of their way. While the speaker is on one of them, `control` does not resume
+a station over it, push titles, or handle the remote's skip buttons, which stay with that source.
+Pressing a preset still switches to its station, as it should. None of this has been tried with
+`control` running yet.
+
+Which of these sources a speaker has depends on its model, series and firmware, so check Bose's
+support site for your hardware. For example, on a SoundTouch 30 Series III, AirPlay 2 came with
+firmware 24.0.7 (February 2020), so the last release, 27.0.6, has it; earlier models may have only
+the original AirPlay.
+
+## Build
+
+```bash
+make          # build the cxstcc binary (cx sound touch c++ controller)
+make clean
+```
+
+On Fedora, `sudo make deps-fedora` installs what the build needs: `gcc-c++`, `make`,
+`libcurl-devel`, `libwebsockets-devel`, `pugixml-devel` and `json-devel`. dnf lists them and asks
+before installing. A minimal install may lack `make` itself: `sudo dnf install make` first.
+`make container` also needs Docker, which this leaves to you.
+
+## Usage
+
+```bash
+./cxstcc discover --save     # find speakers, write devices.json
+./cxstcc devices             # show saved speakers and which is default
+./cxstcc set-default <id>    # change the default speaker
+
+./cxstcc list                # list streams from streams.json
+./cxstcc play klove          # play a stream by name
+./cxstcc play klove-90s
+./cxstcc play klove --song   # ...with the current song on the display (goes stale)
+./cxstcc stop
+./cxstcc status              # raw /nowPlaying
+
+./cxstcc presets             # presets stored on the speaker
+./cxstcc program-presets     # store every preset declared in streams.json
+./cxstcc save <1-6>          # store the currently playing stream as a preset
+./cxstcc save 4 klove-90s    # store a named stream as a preset
+./cxstcc select <1-6>        # trigger a preset the way the button does
+
+./cxstcc nowplaying          # current song on whatever is playing
+./cxstcc nowplaying --watch  # print each song as it changes
+./cxstcc nowplaying --interval 30   # sample every 30s instead of staying connected
+
+./cxstcc control             # watch for preset buttons and take over playback
+./cxstcc control --update-track-info              # ...and keep the song on the display
+./cxstcc control --update-track-info --no-proxy   # same, without the local relay
+./cxstcc control --no-resume # never start a preset by itself (see below)
+./cxstcc control --relay-port 9900   # if 8899 is taken (or SOUNDTOUCH_RELAY_PORT=9900)
+./cxstcc control --update-track-info --title-offset -4   # push titles 4 s earlier (or SOUNDTOUCH_TITLE_OFFSET)
+./cxstcc control --update-track-info --relay-buffer 64   # keep more for long pauses (or SOUNDTOUCH_RELAY_BUFFER)
+./cxstcc --data-dir ~/st control     # config and state elsewhere (or SOUNDTOUCH_DATA_DIR)
+```
+
+Commands act on the default speaker from `devices.json`, falling back to `192.168.3.53` when that
+file is absent. Discovery runs only for the `discover` command.
+
+`streams.json`, `devices.json` and `state.json` are read from, and written to, the current
+directory, or the one given by `--data-dir <dir>` (anywhere on the command line) or
+`SOUNDTOUCH_DATA_DIR`. `help` needs none of them.
+
+Ctrl-C, SIGTERM (`docker stop`, systemd) and SIGHUP stop `control` and `nowplaying --watch`
+cleanly; a second one quits at once. Started under `nohup`, a closed terminal (SIGHUP) does not
+stop it. `nowplaying --watch` piped into something that exits, such as
+`head`, ends with it.
+
+Numeric options and their environment variables must be whole, valid numbers (`9900x` is refused),
+and an environment variable set to nothing counts as not set. Options that take a value take it either way,
+`--title-offset -3.1` or `--title-offset=-3.1` (also `--data-dir` and `nowplaying --interval`); an
+option `control` or `nowplaying` does not know is an error, not silently ignored.
+
+## Configuration
+
+`streams.json` defines the streams. `name` is what you pass to `play`, `display_name` is what the
+speaker shows, and the optional `preset` maps a stream to a physical button for `control` mode:
+
+```json
+{ "name": "klove", "display_name": "K-LOVE",
+  "url": "http://maestro.emfcdn.com/stream_for/k-love/iheart/aac", "preset": 1 }
+```
+
+`devices.json` is generated by `discover --save` and holds the speaker list plus `default_device`.
+
+### Presets and button combos
+
+The speaker has six buttons, but `preset` may be one, two or three digits, each digit naming a
+button. A multi-digit preset is a combo entered by pressing those buttons in order, no more than
+`combo_window_ms` apart (default 700). That yields 6 + 36 + 216 reachable presets.
+
+```json
+{ "combo_window_ms": 700,
+  "streams": [
+    { "name": "klove",     "preset": 1,   "url": "..." },
+    { "name": "klove-70s", "preset": 11,  "url": "..." },
+    { "name": "klove-80s", "preset": 12,  "url": "..." },
+    { "name": "christmas", "preset": 111, "url": "..." }
+  ] }
+```
+
+A sequence resolves the moment no configured preset can extend it, so only genuinely ambiguous
+presses wait. With the mapping above, `1` and `11` wait out the window because longer presets begin
+with them, while `12` and `111` fire immediately on the last press. A digit that begins nothing
+longer never waits at all. This means the buttons you overload are the slow ones — if a station is
+the one you reach for most, give it a preset that is not a prefix of anything.
+
+`streams.json` is the source of truth. After editing it, run:
+
+```bash
+./cxstcc program-presets
+```
+
+This works out which buttons the configuration depends on — as presets in their own right *and* as
+any digit of a combo — and stores content on each. It is required because **a button only reports a
+press if the speaker has something stored on it**, so an unprogrammed button stops playback with
+nothing to restart it. A button used only as a combo digit has no stream of its own, so it gets a
+placeholder borrowed from a combo it takes part in; that content never plays, it only makes the
+button report presses. Buttons the configuration does not use are left alone.
+
+Combos themselves are never stored on the speaker — there is nowhere to put them. They exist only
+in `streams.json` and are resolved by `control`.
+
+The speaker has no preset-removal endpoint (`/storePreset` is itself undocumented), so a button
+programmed earlier and later dropped from `streams.json` keeps its old content. Pressing it stops
+playback and `control` logs that no stream is configured. Overwrite it rather than expecting to
+clear it.
+
+`control` reads `streams.json` once at startup, so restart it after editing.
+
+## How control mode works
+
+The speaker's own preset handling still tries to reach the dead cloud, so a button press always
+ends in failure. The program waits for that failure and then plays the stream itself:
+
+```
+preset button pressed          -> nowSelectionUpdated
+speaker stops current stream   -> nowPlaying STOP_STATE      (~0.1s later)
+speaker's preset attempt fails -> nowPlaying INVALID_SOURCE  (~0.2s later)
+program plays the mapped stream over UPnP
+```
+
+Measured against the hardware: each physical press produces exactly one preset event and one
+`INVALID_SOURCE`, about 0.2s apart.
+
+Two libwebsockets details the control loop depends on, both learned the hard way:
+
+- `lws_service()` **ignores its timeout argument** and sleeps until an event is queued, so a
+  deadline cannot be polled from the loop. Waiting is scheduled with `lws_set_timer_usecs()`, which
+  delivers `LWS_CALLBACK_TIMER`. Only one deadline is ever outstanding, since collecting digits and
+  waiting for `INVALID_SOURCE` are mutually exclusive states.
+- `lws_service()` **fires a callback and then goes back to sleep without returning.** Work handed
+  from a callback to the loop therefore stalls until some unrelated event arrives — measured at over
+  25 seconds. `lws_cancel_service()` breaks the wait, and is called when playback is requested and
+  again when a play thread finishes.
+
+If the speaker reboots or drops off the network, `control` notices its event stream closing and
+reconnects by itself every 3s until the speaker is back; a button pressed meanwhile is lost.
+
+**Resuming.** `control` remembers the last preset played in `state.json` and brings it back by
+itself, unless started with `--no-resume`:
+
+- **At start-up**, so restarting `control` or the machine does not leave the speaker silent. Not if
+  the speaker is off (standby), so it never switches it on by itself, nor if it is on another source
+  such as Bluetooth or AUX.
+- **After an unexpected stop:** the speaker dropping to `INVALID_SOURCE` with no button pressed, or
+  coming back from a reboot while it was playing. Anything the user does counts as meant, not
+  unexpected: a press (an unmapped one still leaves it silent), switching it off, another source
+  (another app streaming to it over UPnP included), pausing or stopping it.
+- **Never over a pause.** Paused from the remote, it stays paused through a reconnect, a reboot or a
+  restart of `control`, with or without `--no-resume`. Started while the speaker is paused on one of
+  its streams, `control` takes that stream over as it is; Play on the remote then carries on (see
+  *Pausing from the remote*).
+- A drop within 15s of a song update is that update's fault, so it is recovered even with
+  `--no-resume`.
+- At most 3 automatic resumes in 10 minutes; past that it waits for a press.
+
+The relay logs each speaker connection, how far behind the station it starts, and why it ended,
+which is where a dropped stream shows up.
+
+After starting a stream, `control` (and `play`) checks that the speaker really is playing it. Once,
+after a burst of button presses, its player got stuck: it accepted every command, even a stream
+straight from the CDN, and sat paused without asking for it, while reporting `INVALID_SOURCE`.
+Standby from the remote did not clear it; a reboot did. So a stream that has not started within 8s
+is stopped and sent once more, and if that fails too, it says the player looks stuck and how to
+reboot the speaker (`printf 'sys reboot\r\n' | nc <speaker> 17000`, ~70s, nothing lost).
+
+Stopping it: the first Ctrl-C stops waiting for a stream to start and sends nothing more, then
+exits 0 once any request already on the wire is answered. A second Ctrl-C quits at once and dies
+from SIGINT (exit 130), which matters if the speaker has gone unresponsive and libcurl is sitting on
+its 10s timeout. A stop that comes during start-up is honoured too.
+
+While the speaker cannot be reached, the log says so once, not on every retry, and again when it is
+back.
+
+Two consequences worth knowing:
+
+- **A press cannot be ignored.** The speaker stops playback before the program is told anything, so
+  even pressing the preset that is already playing forces a restart. There is no way to leave it
+  undisturbed; the gap is the buffering time.
+- **Do not play before `INVALID_SOURCE` arrives.** Sending playback earlier lets the speaker's
+  failing preset attempt overwrite the stream metadata, which loses the station name on the display.
+
+## Station name on the display
+
+`SetAVTransportURI` must carry DIDL-Lite metadata for the speaker to show a name. It needs a `<res>`
+element holding the stream URL, or the speaker rejects the request with UPnP error 402 ("Can't play.
+No URI supplied.") and keeps playing whatever was set before. With valid metadata the speaker
+reports the real stream URL and `<itemName>`; without it, `location` reads `unplayable location`.
+
+Artwork is a separate matter: `artImageStatus` stays `SHOW_DEFAULT_IMAGE`, and the Web API offers no
+way to set album art for an ad-hoc stream.
+
+Because `/nowPlaying` reports the URL it was given, `save` and `nowplaying` identify the playing
+stream by matching that URL against `streams.json`; no local state file is needed. Through the relay
+(below) the speaker reports the relay's URL instead, so the relay puts the stream's name in the path
+— `http://<this host>:8899/stream/klove` — and that is matched by name.
+
+## Song titles on the display
+
+The stations interleave the current song with the audio as ICY metadata (`StreamTitle='Artist -
+Song'`), but only for a client that asks with `Icy-MetaData: 1`. The speaker never asks, and there is
+no API to set the song on it, so this cannot come from the speaker itself. Each title is read here and
+pushed with another `SetAVTransportURI` carrying new DIDL-Lite; the display then cycles song, artist
+and station. Every push makes the speaker drop the stream and buffer it again, so each song change
+costs a gap.
+
+`control --update-track-info` keeps that gap small with a relay on this host (port 8899) that sits
+between the station and the speaker:
+
+- **Shorter gap.** The relay holds one connection to the station open, so the speaker never waits
+  for DNS, the CDN's redirect or TLS, and it hands each new connection a 96 KB backlog (~12s of
+  audio) at LAN speed. Measured gap per song change: **~1.2s**, against **~4s** pointing the speaker
+  at the station directly.
+- **On time.** The relay reads the titles on that same connection and strips them out, so the
+  speaker still gets plain audio, and it records the byte where each title begins. Because the
+  speaker plays from the backlog, it normally trails the station by ~10–12s. Titles are therefore
+  pushed when the speaker *reaches* that byte, estimated from when its connection started and the
+  stream's bitrate, rather than when the station announces them. The estimate never runs past what
+  the speaker has actually been sent, so it stays right through an outage that leaves it waiting,
+  and it stops when a preset press stops the speaker, so nothing is pushed to a stopped speaker.
+  Measured: the display changed 10.9–11.8s after the station announced the song. The bitrate comes
+  from `icy-br`, snapped to the standard rate it means: this CDN says 63 or 64 at random for the
+  same 64 kbps stream, and 1.6% low would put every push ~3s late. Without `icy-br` the rate is
+  measured, and nothing is pushed until it is known.
+- **Nothing skipped.** After a push the speaker reconnects, and the relay resumes it at the byte
+  where the new song begins, to within a fraction of a second. The silence falls between the songs
+  instead of cutting either one.
+- **No flapping.** A title that is no longer the one playing 10s later is treated as a station ID,
+  or a reconnect replaying the song before, and is skipped rather than costing a gap. A song
+  interrupted by a brief ID is still pushed on time, as long as the ID is over within 10s of the
+  song starting. This is judged on what has arrived by the time the speaker reaches the title, so
+  it never delays a push. Just after starting on a song inside the backlog (below) the speaker
+  trails by less than 10s for a few songs, and the window is that much shorter.
+- **Dropped connections are seamless.** The station opens every connection with ~10s of backlog, so
+  a reconnect would replay audio the speaker has just played. The relay holds the new connection's
+  audio back, finds where it catches up with what it already has, and drops the repeat along with
+  any stale title in it. If the new connection's backlog ends with no overlap, which shows as its
+  audio keeping to real time for 1.5s, the drop really did lose audio and playback carries on after
+  the gap. A reconnect whose backlog itself stalls for 1.5s or more, or crawls in at under ~1.35×
+  real time, is taken for one with no overlap and plays its repeat; these CDNs send the whole
+  backlog within ~0.8s, pausing at most ~0.34s.
+- **Tuning when the title is pushed.** Stations update the title anywhere from a few seconds before
+  to ~15 s after the new song actually starts (measured over 10 changes on 4 stations: median 4.4 s
+  late), so the short silence of a push can land a few seconds into the song. `--title-offset
+  <seconds>` moves every push: positive later, negative earlier, fractions allowed, ±60 s. The
+  speaker carries on from the moved point, so only where the silence falls changes. Two safeguards:
+  earlier works only as far as the relay sees ahead of the speaker (normally 10–12 s), checked for
+  each title as it arrives; asked for more, that title is pushed at its title change and a line says
+  so. And later never runs into the next song: such a push goes out at once instead. Without the
+  relay titles already arrive early, so there only a positive offset applies, as an extra delay.
+- **A failed push is retried** 2s later rather than leaving the old song up for the whole track. A
+  retry resumes the speaker where it has got to, rather than replaying what it played meanwhile.
+
+### Pausing from the remote
+
+Paused, the speaker hangs up on the relay (or, sometimes, stops reading). On Play it asks to carry
+on with `Range: bytes=N-`, where N counts the bytes it was sent, and it turns down anything but a
+`206 Partial Content` carrying exactly those bytes. The relay keeps reading the station meanwhile,
+so it answers from byte N, and the music carries on where it paused. Titles go on being pushed at
+the right moment, counted from where it paused rather than from what it had buffered.
+
+- **How long a pause can last** is set by how much of the stream the relay keeps: `--relay-buffer
+  <MB>` (or `SOUNDTOUCH_RELAY_BUFFER`), 2–512, default **16 MB, about 33 minutes at 64 kbps** (half
+  that at 128 kbps). It counts from the live edge, so a speaker already trailing the station by a
+  minute has a minute less. The memory is taken up only as the stream fills it.
+- **Longer than that**, nothing it can carry on from is left. The relay does not send it other bytes
+  under a 206; `control` starts it again on the song now playing, from its beginning, with that
+  song on the display. A restart of `control` during a pause ends the same way, since the new relay
+  never had the speaker's stream; it joined the station part way into that song, though, so the
+  song starts where the relay's backlog does.
+- **Nothing is pushed while paused**, and nothing resumes a paused speaker. A pause within 3s of a
+  push or a play could be the speaker on its way to playing what it was sent, which it shows by
+  buffering or playing next; until that is clear it counts as a pause. Its position is held from
+  the moment it paused, not from when that became clear.
+- **Asking for the stream is not a Play.** Paused on a connection it kept open, the speaker asks to
+  carry on, still paused, as soon as that connection drops (say `control` was restarted). So a
+  request while paused is answered only from the pause point, or held unanswered, and `control`
+  asks the speaker (`/nowPlaying`) whether it is playing before starting it again. The same check
+  catches a Play whose event was missed, as is a look on reconnecting the event stream.
+- Without the relay (`--no-proxy`) the speaker asks the station itself to carry on, which these
+  CDNs do not do (they ignore `Range`). Not tried yet: it most likely stays silent until a preset is
+  pressed.
+
+### The remote's skip buttons
+
+The speaker cannot skip a stream it was handed. Pressed, ⏭ or ⏮ makes it try (through QPlay), show
+"action unavailable", report `QPLAY_SKIP_NEXT_FAILED` (4301) or `QPLAY_SKIP_PREV_FAILED` (4302)
+on its event stream, and drop the stream. `control` takes that report as the button press it is,
+and does the skip itself from the relay's buffer:
+
+- **⏭** goes to the start of the next song the relay already has, once 3s of it has arrived. Normally
+  the speaker trails the station by only ~11s, so there usually is none, and it carries on where it
+  was, nothing skipped. After a pause, with songs between the speaker and the station, each press
+  skips one.
+- **⏮** goes back to the start of the song playing, when it is 5s or more into it, as players do;
+  within the first 5s, or pressed again within 10s of the last ⏮, to the song before, and so on, as
+  far back as the buffer reaches. (Each press costs a gap and the speaker's own message, so a second
+  press rarely comes within 5s of the song's start.) A song that began before the relay joined the
+  station starts where the relay's copy of it does.
+- A press while the last one is still starting the speaker takes over from it, counting from where
+  that one was sending it.
+- Every title change counts as a song, station IDs included. Presses that come while one is being
+  handled add up. The display shows the song it lands on, and each press costs a gap of ~1.5s.
+- A press counts as someone being there: it never uses up the automatic resumes, and it resets
+  their limit, as a preset press does. Only control's own streams are skipped; another app's is
+  left to it.
+- Without the relay there is nothing to skip within, so either button starts the stream again.
+
+Things to know:
+
+- **The relay is in the audio path.** Stopping `control` stops the music.
+- **Changing station still costs the full start-up**, because the relay has to open the new station
+  from scratch. Measured 4.6–5.0s from press to sound for preset 1, including the 700ms wait for a
+  second digit. Pressing the station already on is quicker (measured 1.25–1.6s), since the relay is
+  already connected, and it carries on where the speaker stopped, to within about a tenth of a
+  second, keeping the song on the display. The same goes for pressing it within 15s of the speaker
+  stopping with nothing else played in between, say after a stray press of an unmapped button, and
+  for stations that send no titles. It needs the stream's rate, so in the first ~10s of a station
+  without `icy-br` a re-press starts from the backlog instead. Only song changes within a station
+  get the short gap.
+- **A station change waits for the song.** `control` waits up to 4.5s for the station's first title
+  and the rest of its opening backlog, so the opening command can carry the song. From a cold
+  connection the first title takes ~2.2s (redirect, TLS, then 4 KB of audio). The backlog comes in
+  two parts with a pause of up to ~340ms between them and is complete ~0.8s after its first byte.
+  The backlog can begin in one song and end in the next. When it does, the speaker starts on the
+  newer song if at least 3s of it is already here; with less it would be starting nearly live, so it
+  plays the backlog from its start instead, already showing the new title. Starting without the
+  title would mean pushing it a moment later, a second gap straight after the first. If the wait
+  does run out, that is what happens. A station that sends no titles is started straight away.
+- **The speaker drifts behind the station.** Each push adds its own silence (~1.2s) to how far the
+  speaker trails, and each pause its whole length. A resume reaches back anywhere in the relay's
+  buffer (16 MB by default, ~33 minutes at 64 kbps, ~1,650 song changes) but its oldest 512 KB.
+  Past that it catches up: the song now playing, from its beginning, never part way into a song,
+  which also resets the drift. A station change starts afresh.
+- **The relay answers anyone on the LAN,** but only the speaker is tracked, and other clients are
+  turned away beyond eight at a time.
+
+With `--no-proxy`, or when the relay cannot start, the speaker streams from the station directly and
+the titles come from a separate connection of this program's own. That connection reads at the live
+edge while the speaker trails it by the CDN's opening backlog (~10s for these stations), so titles
+appear about 10s before the song does. Each change also costs the full ~4s gap. In this mode:
+
+- A title is pushed only once no newer one has followed it for 1.5s, so a connection's opening
+  backlog, which can carry the previous song's title, does not cost an extra gap.
+- Before each push it checks that the speaker is still on the stream `control` gave it, so it never
+  pulls the speaker back from Bluetooth, AUX or a stop. It looks again for up to 15s, in case the
+  speaker was only between states, then lets that title go.
+- Pressing the preset already playing brings the song back to the display.
+- A station that sends no titles is not retried until something else is played.
+
+`nowplaying --update-track-info` is the simpler stand-alone version, for a stream already playing:
+it pushes each title the moment it reads it, checks the speaker once per title, and has none of the
+safeguards above. A connection whose opening backlog spans a song change therefore costs it two gaps
+in a row. It refuses to touch the speaker while `control`'s relay is carrying it.
+
+`nowplaying` exits 1 with the reason when the station cannot be reached, never answers, or goes
+silent for 15s, instead of exiting as if it had finished.
+
+Shoutcast v1 servers, which answer `ICY 200 OK` instead of an HTTP status line, work both through
+the relay and for `nowplaying`.
+
+## Container
+
+`make container` builds `soundtouch:static`: one fully static musl binary on `scratch`, plus a CA
+bundle and nothing else. It is about **2.2 MB unpacked and 1.1 MB to pull**, against ~31 MB for
+the glibc binary with its 38 libraries copied onto Alpine.
+
+```bash
+make container
+docker run -d --name soundtouch --restart unless-stopped --init --network host \
+    -v ~/soundtouch-data:/data soundtouch:static control --update-track-info
+```
+
+- **Host networking is required:** the relay tells the speaker this host's address, and
+  discovery uses multicast. On a bridge network the speaker would be sent an address it cannot
+  reach.
+- **`/data`** holds `streams.json` and `devices.json`, and `state.json` is written there. The image
+  runs as uid/gid 1000; if the directory belongs to someone else, add
+  `--user "$(id -u):$(id -g)"`.
+- **Only one `control` at a time:** two would fight over port 8899 and both answer the buttons.
+- The libraries are cut down to what the tool uses: libcurl does HTTP and HTTPS only (HTTP/1.1, no
+  proxy support), with mbedTLS; libwebsockets does plain `ws://` only. Building it needs Alpine with
+  GCC 14 or newer for `-std=c++26` (3.20's GCC 13 cannot); the Dockerfile uses 3.24.
+- `docker stop` stops it cleanly: the binary handles SIGTERM itself, even as PID 1.
+- Memory: a few MB plus the relay's buffer as it fills, so up to ~20 MB with the default 16 MB
+  (`-e SOUNDTOUCH_RELAY_BUFFER=…` to change it).
+- If `state.json` cannot be written, say the directory belongs to another user, a warning names the
+  directory and the reason; the speaker keeps playing, but the last preset is not remembered.
+- Mounting a single file that does not exist on the host (`-v ~/st/state.json:/data/state.json`)
+  makes docker create a directory in its place. That is reported (`cannot read state.json: ... Is a
+  directory`) rather than crashing; mount the directory instead.
+
+## Files
+
+- `main.cpp` — CLI
+- `SoundTouchClient.{h,cpp}` — UPnP SOAP (port 8091) and REST (port 8090) via libcurl
+- `WebSocketListener.{h,cpp}` — event loop on the `gabbo` WebSocket (port 8080)
+- `StreamConfig.{h,cpp}` — `streams.json`
+- `DeviceDiscovery.{h,cpp}` — SSDP discovery and `devices.json`
+- `IcyDemuxer.{h,cpp}` — splits a stream into audio and its ICY song titles
+- `IcyReader.{h,cpp}` — reads song titles over a connection of its own
+- `StreamProxy.{h,cpp}` — the relay used by `control --update-track-info`
+- `Say.h` — output written a line at a time, so threads' lines never mix
+- `container/Dockerfile` — the static image (`make container`)
+- `systemd/` — the service unit, its settings file and the install steps (`systemd/README.md`)
+
+## Ports
+
+| Port | Use |
+|------|-----|
+| 8090 | Bose REST API (`/nowPlaying`, `/presets`, `/key`, `/info`) |
+| 8091 | UPnP AVTransport control |
+| 8080 | `gabbo` WebSocket event stream |
+| 1900 | SSDP discovery (UDP multicast) |
+| 8899 | The relay, on this host (`control --update-track-info`; `--relay-port` to change) |
+
+## Reference
+
+Bose SoundTouch Web API: https://assets.bosecreative.com/m/496577402d128874/original/SoundTouch-Web-API.pdf

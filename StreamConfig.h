@@ -26,7 +26,7 @@ class StreamConfig
         StreamConfig ();
         ~StreamConfig ();
 
-        bool loadFromFile (const std::string &filename);
+        bool loadFromFile (const std::string &filename, bool quiet = false);
         const Stream *findByName (const std::string &name) const;
         const Stream *findByPreset (int presetId) const;
         const Stream *findByUrl (const std::string &url) const;

@@ -4,13 +4,13 @@ DEPFLAGS := -MMD -MP
 LDFLAGS  := -lcurl -lwebsockets -lpugixml
 
 TARGET   := cxstcc
-SOURCES  := main.cpp SoundTouchClient.cpp WebSocketListener.cpp StreamConfig.cpp DeviceDiscovery.cpp IcyDemuxer.cpp IcyReader.cpp StreamProxy.cpp
+SOURCES  := main.cpp SoundTouchClient.cpp WebSocketListener.cpp StreamConfig.cpp DeviceDiscovery.cpp IcyDemuxer.cpp IcyReader.cpp StreamProxy.cpp HttpUtil.cpp WebJson.cpp WebServer.cpp
 OBJECTS  := $(SOURCES:.cpp=.o)
 
 # Each object's header dependencies, written by the compiler as it builds.
 DEPENDS  := $(OBJECTS:.o=.d)
 
-.PHONY: all clean container install install-service deps-fedora
+.PHONY: all clean container install install-service deps-fedora test e2e
 
 all: $(TARGET)
 
@@ -21,7 +21,24 @@ $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJECTS) $(DEPENDS) $(TARGET)
+	rm -f $(OBJECTS) $(DEPENDS) $(TARGET) $(TEST_TARGET)
+
+# A small, dependency-free unit test for the web server's pure logic (HTTP request parsing, JSON
+# serialisation and the live-change signal). No gtest: it compiles only the units under test, which
+# pull in no sockets, curl or pugixml. Run: make test
+TEST_TARGET := webtest
+TEST_SRC    := test/WebTest.cpp HttpUtil.cpp WebJson.cpp
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+$(TEST_TARGET): $(TEST_SRC) HttpUtil.h WebJson.h LiveSignal.h StreamConfig.h DeviceDiscovery.h SoundTouchClient.h
+	$(CXX) $(CXXFLAGS) -I. -o $@ $(TEST_SRC)
+
+# End to end, with no real speaker: runs the built program against test/fake_speaker.py (a stand-in
+# SoundTouch on 127.0.0.2) and checks the dashboard's live updates. Needs python3, nothing else.
+e2e: $(TARGET)
+	python3 test/web_live_check.py
 
 # The Fedora packages the build needs: sudo make deps-fedora. dnf asks before installing anything,
 # and skips what is already there; DNF="dnf -y" to not be asked. Docker, for make container, is

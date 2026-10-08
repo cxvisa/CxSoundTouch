@@ -19,6 +19,8 @@ Nothing depends on the Bose cloud, and the speaker's firmware and server setting
   song.
 - **Starts the last station again by itself** at start-up and after an unexpected stop, but never
   over a pause, standby or another source; reconnects when the speaker reboots.
+- **A web dashboard** (`control --web`): what is playing, live, with the volume, Play/Pause and
+  Power at hand ([The dashboard](#the-dashboard)).
 - **Command line** to find speakers, play, stop, see what is playing and program the presets
   ([Usage](#usage)).
 - **Runs as a systemd service** ([systemd/README.md](systemd/README.md)) or a static container
@@ -55,8 +57,16 @@ the original AirPlay.
 
 ```bash
 make          # build the cxstcc binary (cx sound touch c++ controller)
+make test     # unit tests of the dashboard's logic: no speaker, no network
+make e2e      # the dashboard's live updates, end to end, against a fake speaker
 make clean
 ```
+
+`make e2e` needs only `python3`. It runs the built binary against `test/fake_speaker.py`, a stand-in
+SoundTouch on 127.0.0.2 (its event stream on 8080, its Web API on 8090) that sends the XML a
+SoundTouch 30 sends, so no real speaker is touched. The fake runs on its own for trying things by
+hand too: `python3 test/fake_speaker.py --data-dir /tmp/fake-st` prepares that data dir and prints
+the `cxstcc` and `curl` commands to drive it.
 
 On Fedora, `sudo make deps-fedora` installs what the build needs: `gcc-c++`, `make`,
 `libcurl-devel`, `libwebsockets-devel`, `pugixml-devel` and `json-devel`. dnf lists them and asks
@@ -113,6 +123,17 @@ Numeric options and their environment variables must be whole, valid numbers (`9
 and an environment variable set to nothing counts as not set. Options that take a value take it either way,
 `--title-offset -3.1` or `--title-offset=-3.1` (also `--data-dir` and `nowplaying --interval`); an
 option `control` or `nowplaying` does not know is an error, not silently ignored.
+
+### The dashboard
+
+`control --web` serves a web dashboard on port 8081 (`--web-port`, or `SOUNDTOUCH_WEB_PORT`) beside
+what `control` does; `web` serves it on its own. It shows what is playing, the speaker's volume, the
+streams, the speakers found and the settings, and works the speaker as the remote does: Play and
+Pause, Power, and the volume, by its slider, by − and + (hold to repeat), or by typing a level. Power
+on does what the remote's power button does. Inside `control` the page hears of a change the moment
+the speaker reports it; on its own it looks every 3s. It listens on every interface, so anyone on
+the network can use it, as anyone there can already use the speaker's own Web API; `--web-bind
+127.0.0.1` keeps it to this machine.
 
 ## Configuration
 
@@ -464,7 +485,12 @@ docker run -d --name soundtouch --restart unless-stopped --init --network host \
 - `IcyDemuxer.{h,cpp}` — splits a stream into audio and its ICY song titles
 - `IcyReader.{h,cpp}` — reads song titles over a connection of its own
 - `StreamProxy.{h,cpp}` — the relay used by `control --update-track-info`
+- `WebServer.{h,cpp}` — the dashboard and its JSON API (`web`, `control --web`)
+- `WebAssets.h` — the dashboard page, embedded in the binary
+- `WebJson.{h,cpp}`, `HttpUtil.{h,cpp}` — the dashboard's JSON, and its HTTP request parsing
+- `LiveSignal.h` — wakes the dashboard's held request when control's live state, such as the volume, changes
 - `Say.h` — output written a line at a time, so threads' lines never mix
+- `test/` — the unit tests (`make test`), the fake speaker and the end-to-end check (`make e2e`)
 - `container/Dockerfile` — the static image (`make container`)
 - `systemd/` — the service unit, its settings file and the install steps (`systemd/README.md`)
 
@@ -472,11 +498,12 @@ docker run -d --name soundtouch --restart unless-stopped --init --network host \
 
 | Port | Use |
 |------|-----|
-| 8090 | Bose REST API (`/nowPlaying`, `/presets`, `/key`, `/info`) |
+| 8090 | Bose REST API (`/nowPlaying`, `/presets`, `/key`, `/info`, `/volume`) |
 | 8091 | UPnP AVTransport control |
 | 8080 | `gabbo` WebSocket event stream |
 | 1900 | SSDP discovery (UDP multicast) |
 | 8899 | The relay, on this host (`control --update-track-info`; `--relay-port` to change) |
+| 8081 | The dashboard, on this host (`web`, `control --web`; `--web-port` to change) |
 
 ## Reference
 

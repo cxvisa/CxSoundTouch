@@ -4,6 +4,8 @@
 #include "DeviceDiscovery.h"
 #include "IcyReader.h"
 #include "StreamProxy.h"
+#include "WebServer.h"
+#include "LiveSignal.h"
 #include "Say.h"
 #include <mutex>
 #include <iostream>
@@ -29,6 +31,12 @@
 // The relay's port unless --relay-port or SOUNDTOUCH_RELAY_PORT says otherwise. With host
 // networking there is no remapping it, so it has to be settable where 8899 is taken.
 static constexpr int DEFAULT_RELAY_PORT = 8899;
+
+// The web dashboard's port unless --web-port or SOUNDTOUCH_WEB_PORT says otherwise.
+static constexpr int DEFAULT_WEB_PORT = 8081;
+
+// Reported by the dashboard and /api/health.
+static constexpr const char *WEB_VERSION = "cxstcc/0.1";
 
 // From a cold connection a station's first title takes ~2.2s (the CDN's redirect, TLS, then 4 KB
 // of audio), and the rest of its opening backlog is in ~0.8s after its first byte, so allow for a
@@ -373,6 +381,9 @@ static void printUsage (const char *programName)
     Say () << "          [--title-offset <seconds>]   push song titles later (+) or earlier (-)\n";
     Say () << "          [--relay-buffer <MB>]        stream kept by the relay, which is how long a\n";
     Say () << "                                       pause still carries on exactly where it stopped\n";
+    Say () << "          [--web] [--web-port <port>] [--web-bind <addr>]  serve the dashboard too\n";
+    Say () << "  " << programName << " web [--web-port <port>] [--web-bind <addr>]"
+           << "   the dashboard, on its own\n";
     Say () << "\n";
     Say () << "  --data-dir <dir> before any command, or SOUNDTOUCH_DATA_DIR, sets where streams.json,\n";
     Say () << "  devices.json and state.json live (default: the current directory).\n";
@@ -382,6 +393,8 @@ static void printUsage (const char *programName)
            << " min at 64 kbps; "
            << StreamProxy::MIN_BUFFER_MB << " to " << StreamProxy::MAX_BUFFER_MB << "),\n";
     Say () << "  SOUNDTOUCH_TITLE_OFFSET its --title-offset.\n";
+    Say () << "  SOUNDTOUCH_WEB_PORT sets the dashboard port (default " << DEFAULT_WEB_PORT
+           << "), SOUNDTOUCH_WEB_BIND its bind address.\n";
     Say () << "\n";
     Say () << "Examples:\n";
     Say () << "  " << programName << " discover --save # Find devices and save to devices.json\n";
@@ -402,6 +415,8 @@ static void printUsage (const char *programName)
     Say () << "  " << programName << " nowplaying --interval 30\n";
     Say () << "                               # sample every 30s instead of staying connected\n";
     Say () << "  " << programName << " control         # Watch preset buttons and take over playback\n";
+    Say () << "  " << programName << " web             # Dashboard on port " << DEFAULT_WEB_PORT << "\n";
+    Say () << "  " << programName << " control --web   # ...and the dashboard alongside control\n";
 }
 
 static int handleCommand (int argc, char *argv[])
@@ -519,6 +534,129 @@ static int handleCommand (int argc, char *argv[])
         }
 
         Say () << "Default device set to: " << deviceId << "\n";
+
+        return (0);
+    }
+
+    // The dashboard reads its data fresh on each request, so it needs no configuration up front and
+    // works on an empty data directory; handled here, before the shared load that insists on streams.
+    if (command == "web")
+    {
+        long webPort = DEFAULT_WEB_PORT;
+        std::string webBind;
+
+        auto webEnv = [] (const char *name) -> const char *
+        {
+            const char *value = std::getenv (name);
+
+            return ((value != nullptr && *value != '\0') ? value : nullptr);
+        };
+
+        if (const char *text = webEnv ("SOUNDTOUCH_WEB_PORT"))
+        {
+            if (!parseWholeNumber (text, webPort) || webPort < 1 || webPort > 65535)
+            {
+                Say (std::cerr) << "Error: SOUNDTOUCH_WEB_PORT takes a port from 1 to 65535, not '" << text << "'\n";
+                return (1);
+            }
+        }
+
+        if (const char *text = webEnv ("SOUNDTOUCH_WEB_BIND"))
+        {
+            webBind = text;
+        }
+
+        for (int i = 2; i < argc; ++i)
+        {
+            std::string arg (argv[i]);
+            std::string inlineValue;
+            bool hasInlineValue = false;
+            const size_t equals = arg.find ('=');
+
+            if (arg.compare (0, 2, "--") == 0 && equals != std::string::npos)
+            {
+                inlineValue = arg.substr (equals + 1);
+                arg.erase (equals);
+                hasInlineValue = true;
+            }
+
+            if (arg == "--web-port" || arg == "--web-bind")
+            {
+                if (!hasInlineValue && i + 1 >= argc)
+                {
+                    Say (std::cerr) << "Error: " << arg << " needs a value\n";
+                    return (1);
+                }
+
+                const char *text = hasInlineValue ? inlineValue.c_str () : argv[++i];
+
+                if (arg == "--web-port")
+                {
+                    if (!parseWholeNumber (text, webPort) || webPort < 1 || webPort > 65535)
+                    {
+                        Say (std::cerr) << "Error: --web-port takes a port from 1 to 65535, not '" << text << "'\n";
+                        return (1);
+                    }
+                }
+                else
+                {
+                    webBind = text;
+                }
+            }
+            else
+            {
+                Say (std::cerr) << "Error: unknown web option '" << argv[i] << "'\n\n";
+                printUsage (argv[0]);
+                return (1);
+            }
+        }
+
+        std::string deviceIp = "192.168.3.53";
+
+        {
+            DeviceDiscovery discovery;
+
+            if (discovery.loadFromFile ("devices.json"))
+            {
+                if (const SoundTouchDevice *device = discovery.getDefaultDevice ())
+                {
+                    deviceIp = device->ipAddress;
+                }
+            }
+        }
+
+        WebServer::Settings settings;
+
+        settings.port = static_cast<int> (webPort);
+        settings.bind = webBind;
+        settings.version = WEB_VERSION;
+        settings.relayPort = DEFAULT_RELAY_PORT;
+        settings.relayBufferMb = static_cast<long> (StreamProxy::DEFAULT_BUFFER_MB);
+        settings.titleOffsetSeconds = 0;
+        settings.resume = true;
+        settings.embedded = false;
+        settings.defaultDeviceIp = deviceIp;
+
+        WebServer server (settings);
+
+        if (!server.start ())
+        {
+            return (1);
+        }
+
+        handleStopSignals ();
+
+        Say () << "Web dashboard on http://" << (webBind.empty () ? "0.0.0.0" : webBind)
+               << ":" << webPort << "  (Ctrl-C to stop)\n";
+
+        while (!g_stopRequested)
+        {
+            std::this_thread::sleep_for (std::chrono::milliseconds (200));
+        }
+
+        server.stop ();
+
+        Say () << "\nStopped.\n";
 
         return (0);
     }
@@ -1010,6 +1148,9 @@ static int handleCommand (int argc, char *argv[])
         long relayPort = DEFAULT_RELAY_PORT;
         long bufferMb = StreamProxy::DEFAULT_BUFFER_MB;
         double titleOffsetSeconds = 0;
+        bool webEnabled = false;
+        long webPort = DEFAULT_WEB_PORT;
+        std::string webBind;
 
         // Each setting can come from the environment, as in a container, and the command line
         // overrides it. An empty variable counts as not set.
@@ -1073,6 +1214,22 @@ static int handleCommand (int argc, char *argv[])
             }
         }
 
+        if (const char *text = fromEnvironment ("SOUNDTOUCH_WEB_PORT"))
+        {
+            if (!parseWholeNumber (text, webPort) || !validPort (webPort))
+            {
+                return (badPort ("SOUNDTOUCH_WEB_PORT", text));
+            }
+
+            webEnabled = true;
+        }
+
+        if (const char *text = fromEnvironment ("SOUNDTOUCH_WEB_BIND"))
+        {
+            webBind = text;
+            webEnabled = true;
+        }
+
         for (int i = 2; i < argc; ++i)
         {
             std::string arg (argv[i]);
@@ -1089,7 +1246,7 @@ static int handleCommand (int argc, char *argv[])
                 hasInlineValue = true;
             }
 
-            if (hasInlineValue && (arg == "--update-track-info" || arg == "--no-proxy" || arg == "--no-resume"))
+            if (hasInlineValue && (arg == "--update-track-info" || arg == "--no-proxy" || arg == "--no-resume" || arg == "--web"))
             {
                 Say (std::cerr) << "Error: " << arg << " takes no value\n";
                 return (1);
@@ -1106,6 +1263,32 @@ static int handleCommand (int argc, char *argv[])
             else if (arg == "--no-resume")
             {
                 autoResume = false;
+            }
+            else if (arg == "--web")
+            {
+                webEnabled = true;
+            }
+            else if (arg == "--web-port" || arg == "--web-bind")
+            {
+                if (!hasInlineValue && i + 1 >= argc)
+                {
+                    Say (std::cerr) << "Error: " << arg << " needs a value\n";
+                    return (1);
+                }
+
+                const char *text = hasInlineValue ? inlineValue.c_str () : argv[++i];
+
+                webEnabled = true;
+
+                if (arg == "--web-port" && (!parseWholeNumber (text, webPort) || !validPort (webPort)))
+                {
+                    return (badPort (arg, text));
+                }
+
+                if (arg == "--web-bind")
+                {
+                    webBind = text;
+                }
             }
             else if (arg == "--title-offset" || arg == "--relay-port" || arg == "--relay-buffer")
             {
@@ -1195,6 +1378,23 @@ static int handleCommand (int argc, char *argv[])
         std::atomic<int> lastPreset (config.findByPreset (savedPreset) != nullptr ? savedPreset : 0);
         std::atomic<long long> lastPushMs (0);
         std::atomic<long long> lastPlayMs (0);
+
+        // The speaker's volume, kept current from its /volume event stream (and read once at start).
+        // -1 until it is first known, so the web layer can tell "not read yet" from a real level.
+        std::atomic<int> currentVolume (-1);
+        std::atomic<int> currentVolumeTarget (-1);
+        std::atomic<bool> currentMuted (false);
+
+        // What the speaker last said it is doing: its source (UPNP, STANDBY, BLUETOOTH, ...) and play
+        // status, from its event stream and a look at start. The dashboard shows it, and enables its
+        // play/pause and power buttons by it. Empty until first known.
+        std::mutex speakerStateMutex;
+        std::string speakerSource;
+        std::string speakerStatus;
+
+        // Raised when the volume or the speaker's state above changes, so the dashboard's held request
+        // answers at once. Declared before the dashboard, which waits on it, so it outlives it.
+        LiveSignal liveSignal;
         std::atomic<unsigned> pressCount (0);        // lets a resume see a press that came after it
         std::atomic<bool> pausedByUser (false);
         std::deque<std::chrono::steady_clock::time_point> resumeTimes;    // play thread only
@@ -2373,6 +2573,24 @@ static int handleCommand (int argc, char *argv[])
 
         callbacks.source = [&] (const std::string &source, const std::string &status, const std::string &location)
         {
+            {
+                std::lock_guard<std::mutex> lock (speakerStateMutex);
+
+                speakerSource = source;
+                speakerStatus = status;
+            }
+
+            // Wakes the dashboard once the rest of this has had its say, whichever way it returns.
+            struct NotifyOnReturn
+            {
+                LiveSignal &signal;
+
+                ~NotifyOnReturn ()
+                {
+                    signal.notify ();
+                }
+            } notifyOnReturn { liveSignal };
+
             // Switched off, or over to something else: that is what the user wants now.
             if (source == "STANDBY" || (source != "UPNP" && source != "INVALID_SOURCE"))
             {
@@ -2509,6 +2727,17 @@ static int handleCommand (int argc, char *argv[])
             }
         };
 
+        // The speaker's volume moved, from the knob, the app or the remote. Keep the in-memory level
+        // current, and wake the dashboard so it shows the change at once, without asking the speaker.
+        callbacks.volume = [&] (int target, int actual, bool muted)
+        {
+            currentVolumeTarget = target;
+            currentVolume = actual;
+            currentMuted = muted;
+
+            liveSignal.notify ();
+        };
+
         WebSocketListener listener (deviceIp, callbacks, config.getComboWindowMs ());
         bool connected = false;
 
@@ -2536,6 +2765,37 @@ static int handleCommand (int argc, char *argv[])
             proxy.stop ();
 
             return (1);
+        }
+
+        // Read the volume once at start, so the level is known for the station control takes over
+        // before the speaker sends its first volume event. From here on the event stream keeps it
+        // current. A brief, quiet look: a speaker that will not answer just leaves it unknown.
+        {
+            SoundTouchClient volumeClient (deviceIp);
+            const SoundTouchClient::Volume vol = volumeClient.volume (2000);
+
+            if (vol.valid)
+            {
+                currentVolumeTarget = vol.target;
+                currentVolume = vol.actual;
+                currentMuted = vol.muted;
+
+                Say () << ">>> Volume at start: " << vol.actual << (vol.muted ? " (muted)" : "") << "\n";
+            }
+        }
+
+        // Likewise what the speaker is doing, for the dashboard's buttons until its first event.
+        {
+            SoundTouchClient stateClient (deviceIp);
+            const SoundTouchClient::NowPlaying now = stateClient.glance (2000);
+
+            if (!now.source.empty ())
+            {
+                std::lock_guard<std::mutex> lock (speakerStateMutex);
+
+                speakerSource = now.source;
+                speakerStatus = now.status;
+            }
         }
 
         // Started only once connected, so every way out from here passes the join below.
@@ -2570,7 +2830,84 @@ static int handleCommand (int argc, char *argv[])
             }
         }
 
+        // With --web, the same dashboard as the standalone command, but served from inside control
+        // so it can show what control is doing live. Started once everything it reports on is up.
+        std::unique_ptr<WebServer> webServer;
+
+        if (webEnabled)
+        {
+            auto liveSnapshot = [&] () -> nlohmann::json
+            {
+                std::string stationName;
+                std::string title;
+                std::string source;
+                std::string status;
+
+                {
+                    std::lock_guard<std::mutex> lock (stationMutex);
+
+                    stationName = (station != nullptr) ? station->displayName : std::string ();
+                    title = shownTitle;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock (speakerStateMutex);
+
+                    source = speakerSource;
+                    status = speakerStatus;
+                }
+
+                const int level = currentVolume.load ();
+
+                nlohmann::json snapshot {
+                    { "station", stationName },
+                    { "title", title },
+                    { "last_preset", lastPreset.load () },
+                    { "want_playing", wantPlaying.load () },
+                    { "relay_running", proxy.isRunning () },
+                    { "source", source },
+                    { "status", status } };
+
+                // Null until the first /volume read or event, so the dashboard shows nothing rather
+                // than a made-up level.
+                snapshot["volume"] = (level < 0) ? nlohmann::json (nullptr) : nlohmann::json (level);
+                snapshot["muted"] = currentMuted.load ();
+
+                return (snapshot);
+            };
+
+            WebServer::Settings settings;
+
+            settings.port = static_cast<int> (webPort);
+            settings.bind = webBind;
+            settings.version = WEB_VERSION;
+            settings.relayPort = relayPort;
+            settings.relayBufferMb = bufferMb;
+            settings.titleOffsetSeconds = titleOffsetSeconds;
+            settings.resume = autoResume;
+            settings.embedded = true;
+            settings.defaultDeviceIp = deviceIp;
+
+            webServer = std::make_unique<WebServer> (settings, liveSnapshot, &liveSignal);
+
+            if (webServer->start ())
+            {
+                Say () << "Web dashboard on http://" << (webBind.empty () ? "0.0.0.0" : webBind)
+                       << ":" << webPort << "\n";
+            }
+            else
+            {
+                Say (std::cerr) << "Web dashboard failed to start; continuing without it.\n";
+                webServer.reset ();
+            }
+        }
+
         listener.run ();
+
+        if (webServer)
+        {
+            webServer->stop ();
+        }
 
         {
             std::lock_guard<std::mutex> lock (g_listenerMutex);

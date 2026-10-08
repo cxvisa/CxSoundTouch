@@ -52,6 +52,10 @@ class WebSocketListener
         // a stream it was handed: it tries, reports that it failed, and drops it.
         using SkipCallback = std::function<void(bool)>;
 
+        // The speaker's volume changed, from the knob, the app or the remote: the level it is moving
+        // to and the level it is at now (both 0..100), and whether it is muted.
+        using VolumeCallback = std::function<void(int target, int actual, bool muted)>;
+
         // Only play is required.
         struct Callbacks
         {
@@ -63,6 +67,7 @@ class WebSocketListener
             UnexpectedStopCallback unexpectedStop;
             ConnectedCallback      connected;
             SkipCallback           skip;
+            VolumeCallback         volume;
         };
 
         WebSocketListener (const std::string &deviceIp, const Callbacks &callbacks, int comboWindowMs);
@@ -89,6 +94,7 @@ class WebSocketListener
         bool parseNowPlayingSource (const std::string &message, std::string &source, std::string &status,
                                     std::string &location);
         bool parseSkipFailure (const std::string &message, bool &forward);
+        bool parseVolume (const std::string &message, int &target, int &actual, bool &muted);
         void onButtonPressed (int button);
         void onTimer ();
 

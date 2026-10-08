@@ -2842,11 +2842,13 @@ static int handleCommand (int argc, char *argv[])
                 std::string title;
                 std::string source;
                 std::string status;
+                int stationPreset = 0;
 
                 {
                     std::lock_guard<std::mutex> lock (stationMutex);
 
                     stationName = (station != nullptr) ? station->displayName : std::string ();
+                    stationPreset = (station != nullptr) ? station->preset : 0;
                     title = shownTitle;
                 }
 
@@ -2859,9 +2861,13 @@ static int handleCommand (int argc, char *argv[])
 
                 const int level = currentVolume.load ();
 
+                // What control is playing, only while the speaker is on one of control's streams: on
+                // standby, Bluetooth, AUX or another app's stream, control's last station is not it.
+                const bool onOurs = onControlStream.load ();
+
                 nlohmann::json snapshot {
-                    { "station", stationName },
-                    { "title", title },
+                    { "station", onOurs ? stationName : std::string () },
+                    { "title", onOurs ? title : std::string () },
                     { "last_preset", lastPreset.load () },
                     { "want_playing", wantPlaying.load () },
                     { "relay_running", proxy.isRunning () },
@@ -2872,6 +2878,10 @@ static int handleCommand (int argc, char *argv[])
                 // than a made-up level.
                 snapshot["volume"] = (level < 0) ? nlohmann::json (nullptr) : nlohmann::json (level);
                 snapshot["muted"] = currentMuted.load ();
+
+                // The preset button that stands for what is playing, likewise.
+                snapshot["station_preset"] = (onOurs && stationPreset > 0) ? nlohmann::json (stationPreset)
+                                                                           : nlohmann::json (nullptr);
 
                 return (snapshot);
             };

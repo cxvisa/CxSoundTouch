@@ -427,7 +427,8 @@ WebServer::Response WebServer::route (const HttpRequest &request)
     const std::string &path = request.path;
 
     // The few things the dashboard changes, each a POST; everything else is only looked at.
-    if (path == "/api/volume" || path == "/api/playback" || path == "/api/power")
+    if (path == "/api/volume" || path == "/api/playback" || path == "/api/power" || path == "/api/preset"
+        || path == "/api/skip" || path == "/api/source" || path == "/api/select")
     {
         if (request.method != "POST")
         {
@@ -439,7 +440,27 @@ WebServer::Response WebServer::route (const HttpRequest &request)
             return (setVolume (request));
         }
 
-        return ((path == "/api/playback") ? playback (request) : power (request));
+        if (path == "/api/playback")
+        {
+            return (playback (request));
+        }
+
+        if (path == "/api/power")
+        {
+            return (power (request));
+        }
+
+        if (path == "/api/preset")
+        {
+            return (preset (request));
+        }
+
+        if (path == "/api/select")
+        {
+            return (playPreset (request));
+        }
+
+        return ((path == "/api/skip") ? skip (request) : inputSource (request));
     }
 
     if (request.method != "GET" && request.method != "HEAD")
@@ -541,6 +562,12 @@ nlohmann::json WebServer::configJson () const
     json["embedded"] = m_settings.embedded;
     json["version"] = m_settings.version;
 
+    // How long control waits for another digit of a combo, which the page's keypad waits at least.
+    StreamConfig config;
+
+    config.loadFromFile (STREAMS_FILE, true);
+    json["combo_window_ms"] = config.getComboWindowMs ();
+
     return (json);
 }
 
@@ -576,33 +603,37 @@ nlohmann::json WebServer::stateJson () const
     return (json);
 }
 
-std::string WebServer::resolveStation (const std::string &location) const
+void WebServer::resolveStation (const std::string &location, std::string &name, int &preset) const
 {
+    name.clear ();
+    preset = 0;
+
     if (location.empty ())
     {
-        return (std::string ());
+        return;
     }
 
     StreamConfig config;
 
     config.loadFromFile (STREAMS_FILE, true);
 
-    if (const Stream *stream = config.findByUrl (location))
-    {
-        return (stream->displayName);
-    }
+    const Stream *stream = config.findByUrl (location);
 
-    const std::string name = StreamProxy::streamNameFromUrl (location, 0);
-
-    if (!name.empty ())
+    if (stream == nullptr)
     {
-        if (const Stream *stream = config.findByName (name))
+        const std::string streamName = StreamProxy::streamNameFromUrl (location, 0);
+
+        if (!streamName.empty ())
         {
-            return (stream->displayName);
+            stream = config.findByName (streamName);
         }
     }
 
-    return (std::string ());
+    if (stream != nullptr)
+    {
+        name = stream->displayName;
+        preset = stream->preset;
+    }
 }
 
 nlohmann::json WebServer::nowPlayingJson ()
@@ -625,7 +656,12 @@ nlohmann::json WebServer::nowPlayingJson ()
     SoundTouchClient client (speakerIp ());
     const SoundTouchClient::NowPlaying now = client.glance (1200);
     const SoundTouchClient::Volume vol = client.volume (1200);
-    nlohmann::json json = WebJson::nowPlaying (now, resolveStation (now.location), vol);
+    std::string station;
+    int stationPreset = 0;
+
+    resolveStation (now.location, station, stationPreset);
+
+    nlohmann::json json = WebJson::nowPlaying (now, station, vol, stationPreset);
 
     {
         std::lock_guard<std::mutex> lock (m_nowPlayingMutex);
@@ -739,9 +775,8 @@ WebServer::Response WebServer::playback (const HttpRequest &request)
     }
 
     const bool play = (action == "play");
-    SoundTouchClient client (speakerIp ());
 
-    if (!client.pressKey (play ? "PLAY" : "PAUSE", KEY_TIMEOUT_MS))
+    if (!press (play ? "PLAY" : "PAUSE"))
     {
         return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
     }
@@ -797,9 +832,7 @@ WebServer::Response WebServer::power (const HttpRequest &request)
         return (json (200, nlohmann::json { { "ok", true }, { "on", on }, { "changed", false } }));
     }
 
-    SoundTouchClient client (speakerIp ());
-
-    if (!client.pressKey ("POWER", KEY_TIMEOUT_MS))
+    if (!press ("POWER"))
     {
         return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
     }
@@ -821,6 +854,183 @@ WebServer::Response WebServer::power (const HttpRequest &request)
     }
 
     return (json (200, nlohmann::json { { "ok", true }, { "on", on }, { "changed", true } }));
+}
+
+// A preset button, as on the speaker and the remote: POST {"preset": N}, N from 1 to 6, presses
+// PRESET_N. The speaker reports the press and control plays the station mapped to it, from standby
+// too; a second press soon after makes a combo (1 then 1 is preset 11), as on the remote, which is why
+// the page sends its presses one after another. Answers once the speaker has taken the key.
+WebServer::Response WebServer::preset (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {\"preset\": 1..6}" } }));
+    }
+
+    int number = 0;
+
+    if (!WebJson::parsePreset (request.body, number))
+    {
+        return (json (400, nlohmann::json { { "error", "expected {\"preset\": 1..6}" } }));
+    }
+
+    if (!press ("PRESET_" + std::to_string (number)))
+    {
+        return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
+    }
+
+    return (json (200, nlohmann::json { { "ok", true }, { "preset", number } }));
+}
+
+// A preset by its number, as `cxstcc select` does it: POST {"preset": N} presses the buttons that
+// spell N (111 is 1, 1, 1) a third of the combo window apart, as select does, so control takes them as
+// the remote's combo however fast or slowly they were typed or clicked. Refused, pressing nothing,
+// when N is not made of the buttons 1 to 6 (400) or has no station on it (404), unlike the remote,
+// whose unmapped press silences the speaker. The buttons are pressed under the key lock throughout,
+// so no other press can land between them.
+WebServer::Response WebServer::playPreset (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {\"preset\": N}" } }));
+    }
+
+    int number = 0;
+
+    if (!WebJson::parseSelect (request.body, number))
+    {
+        return (json (400, nlohmann::json { { "error", "expected {\"preset\": N}" } }));
+    }
+
+    std::vector<int> buttons;
+
+    if (!WebJson::buttonsOf (number, buttons))
+    {
+        return (json (400, nlohmann::json { { "error", "presets are made of the buttons 1 to 6, up to three of them: "
+                                                       + std::to_string (number) + " is not one" } }));
+    }
+
+    StreamConfig config;
+
+    config.loadFromFile (STREAMS_FILE, true);
+
+    const Stream *stream = config.findByPreset (number);
+
+    if (stream == nullptr)
+    {
+        return (json (404, nlohmann::json { { "error", "nothing on preset " + std::to_string (number) } }));
+    }
+
+    const std::string station = stream->displayName.empty () ? stream->name : stream->displayName;
+    const int gapMs = std::max (50, config.getComboWindowMs () / 3);
+
+    {
+        std::lock_guard<std::mutex> lock (m_keyMutex);
+        SoundTouchClient client (speakerIp ());
+
+        for (size_t i = 0; i < buttons.size (); ++i)
+        {
+            if (i != 0)
+            {
+                std::this_thread::sleep_for (std::chrono::milliseconds (gapMs));
+            }
+
+            if (!client.pressKey ("PRESET_" + std::to_string (buttons[i]), KEY_TIMEOUT_MS))
+            {
+                return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
+            }
+        }
+    }
+
+    return (json (200, nlohmann::json { { "ok", true }, { "preset", number }, { "station", station } }));
+}
+
+// The remote's skip keys: POST {"direction": "next"} or {"direction": "previous"} presses NEXT_TRACK
+// or PREV_TRACK. On one of control's streams the speaker reports it cannot skip, and control skips
+// within its relay; on Bluetooth the phone does. 409 when the speaker is off.
+WebServer::Response WebServer::skip (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {\"direction\": \"next\" or \"previous\"}" } }));
+    }
+
+    std::string direction;
+
+    if (!WebJson::parseSkip (request.body, direction))
+    {
+        return (json (400, nlohmann::json { { "error", "expected {\"direction\": \"next\" or \"previous\"}" } }));
+    }
+
+    if (speakerState ().source == "STANDBY")
+    {
+        return (json (409, nlohmann::json { { "error", "the speaker is off" } }));
+    }
+
+    if (!press ((direction == "next") ? "NEXT_TRACK" : "PREV_TRACK"))
+    {
+        return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
+    }
+
+    return (json (200, nlohmann::json { { "ok", true }, { "direction", direction } }));
+}
+
+// The speaker's own sources, as its source buttons: POST {"source": "bluetooth"} or {"source": "aux"}
+// selects BLUETOOTH, or AUX, through /select, and answers once the speaker is on it (504 when it is
+// not in time). control takes another source as meant, and keeps out of its way; a preset brings the
+// radio back.
+WebServer::Response WebServer::inputSource (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {\"source\": \"bluetooth\" or \"aux\"}" } }));
+    }
+
+    std::string which;
+
+    if (!WebJson::parseSource (request.body, which))
+    {
+        return (json (400, nlohmann::json { { "error", "expected {\"source\": \"bluetooth\" or \"aux\"}" } }));
+    }
+
+    const bool bluetooth = (which == "bluetooth");
+    const std::string wanted = bluetooth ? "BLUETOOTH" : "AUX";
+
+    {
+        std::lock_guard<std::mutex> keyLock (m_keyMutex);
+        SoundTouchClient client (speakerIp ());
+
+        if (!client.selectSource (wanted, bluetooth ? std::string () : std::string ("AUX"), KEY_TIMEOUT_MS))
+        {
+            return (json (502, nlohmann::json { { "error", "the speaker did not take the source" } }));
+        }
+    }
+
+    const bool done = waitForSpeaker ([&wanted] (const SpeakerState &state)
+    {
+        return (state.source == wanted);
+    }, SOURCE_SETTLE);
+
+    {
+        std::lock_guard<std::mutex> lock (m_nowPlayingMutex);
+
+        m_nowPlayingCached = false;
+    }
+
+    if (!done)
+    {
+        return (json (504, nlohmann::json { { "error", bluetooth ? "the speaker did not switch to Bluetooth" : "the speaker did not switch to AUX" } }));
+    }
+
+    return (json (200, nlohmann::json { { "ok", true }, { "source", which } }));
+}
+
+bool WebServer::press (const std::string &key)
+{
+    std::lock_guard<std::mutex> lock (m_keyMutex);
+    SoundTouchClient client (speakerIp ());
+
+    return (client.pressKey (key, KEY_TIMEOUT_MS));
 }
 
 WebServer::SpeakerState WebServer::speakerState ()

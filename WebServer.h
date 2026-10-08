@@ -14,9 +14,11 @@
 #include <nlohmann/json.hpp>
 
 // A small HTTP server for the dashboard and its JSON API. All it serves is a look at the configuration
-// and the speaker, except three POSTs: /api/volume sets the speaker's volume, and /api/playback and
-// /api/power press its Play, Pause and Power keys, as the remote does. It owns a listening socket and
-// serves each connection on a short-lived thread, in the manner of the stream relay.
+// and the speaker, except the POSTs that work the speaker as its remote and buttons do: /api/volume
+// sets its volume, /api/playback, /api/power, /api/preset and /api/skip press its Play, Pause,
+// Power, preset and skip keys, /api/select presses the buttons that spell a preset, and /api/source
+// switches it to Bluetooth or AUX. It owns a listening socket and serves each connection on a
+// short-lived thread, in the manner of the stream relay.
 //
 // It is host-agnostic. The standalone "web" command runs it over the on-disk configuration and the
 // speaker's own /nowPlaying; "control --web" runs it as a thread and supplies a live snapshot of
@@ -114,6 +116,18 @@ class WebServer
         Response playback (const HttpRequest &request);
         Response power (const HttpRequest &request);
 
+        // POST /api/preset, /api/skip and /api/source: the preset buttons, the remote's skip keys and the
+        // speaker's source buttons (see WebServer.cpp).
+        Response preset (const HttpRequest &request);
+        Response skip (const HttpRequest &request);
+        Response inputSource (const HttpRequest &request);
+
+        // POST /api/select: a preset by its number, combos included, as `cxstcc select` (see WebServer.cpp).
+        Response playPreset (const HttpRequest &request);
+
+        // Presses and releases one of the remote's keys on the speaker, one key at a time.
+        bool press (const std::string &key);
+
         // What the speaker is doing: its source (UPNP, STANDBY, ...) and play status. Both empty when
         // it is not known.
         struct SpeakerState
@@ -134,8 +148,8 @@ class WebServer
         // devices.json, read fresh.
         std::string speakerIp () const;
 
-        // The display name of whatever stream the location names, or "" when none matches.
-        std::string resolveStation (const std::string &location) const;
+        // The display name and preset of whatever stream the location names: "" and 0 when none matches.
+        void resolveStation (const std::string &location, std::string &name, int &preset) const;
 
         static Response json (int status, const nlohmann::json &body);
         static Response text (int status, const std::string &message);
@@ -162,6 +176,10 @@ class WebServer
         // One power change at a time, so that two clicks cannot undo each other.
         std::mutex               m_powerMutex;
 
+        // One key, its press and its release, at a time, so that presses reach the speaker whole and
+        // in the order taken: 1 then 1 must arrive as such to make preset 11.
+        std::mutex               m_keyMutex;
+
         static constexpr size_t MAX_CONNECTIONS = 8;
         static constexpr std::chrono::milliseconds NOW_PLAYING_TTL { 1000 };
 
@@ -181,6 +199,9 @@ class WebServer
         // buffering) or paused, and to be on or in standby, before the dashboard is told it has not.
         static constexpr std::chrono::milliseconds PLAYBACK_SETTLE { 5000 };
         static constexpr std::chrono::milliseconds POWER_SETTLE { 8000 };
+
+        // How long the speaker may take to be on Bluetooth or AUX once asked.
+        static constexpr std::chrono::milliseconds SOURCE_SETTLE { 6000 };
 
         // A held request keeps its connection. This many leave room under MAX_CONNECTIONS for a page
         // loading at the same time, which asks for five things at once.

@@ -1,5 +1,6 @@
 #include "WebJson.h"
 #include <cstdint>
+#include <initializer_list>
 
 nlohmann::json WebJson::stream (const Stream &item)
 {
@@ -65,7 +66,7 @@ nlohmann::json WebJson::devices (const std::vector<SoundTouchDevice> &items, con
 }
 
 nlohmann::json WebJson::nowPlaying (const SoundTouchClient::NowPlaying &now, const std::string &station,
-                                   const SoundTouchClient::Volume &volume)
+                                   const SoundTouchClient::Volume &volume, int stationPreset)
 {
     nlohmann::json json;
 
@@ -73,6 +74,9 @@ nlohmann::json WebJson::nowPlaying (const SoundTouchClient::NowPlaying &now, con
     json["status"] = now.status;
     json["location"] = now.location;
     json["station"] = station;
+
+    // Null for a station on no preset (or none matched), which no preset button stands for.
+    json["station_preset"] = (stationPreset > 0) ? nlohmann::json (stationPreset) : nlohmann::json (nullptr);
 
     // Null when the speaker could not be asked, so the dashboard shows nothing rather than 0.
     if (volume.valid)
@@ -89,41 +93,100 @@ nlohmann::json WebJson::nowPlaying (const SoundTouchClient::NowPlaying &now, con
     return (json);
 }
 
-bool WebJson::parseVolume (const std::string &body, int &level)
+namespace
 {
-    // Not throwing: a malformed body is the caller's mistake, answered with a 400.
-    const nlohmann::json json = nlohmann::json::parse (body, nullptr, false);
-
-    if (json.is_discarded () || !json.is_object ())
+    // The body as a JSON object; false, not throwing, when it is not one: a malformed body is the
+    // caller's mistake, answered with a 400.
+    bool asObject (const std::string &body, nlohmann::json &json)
     {
-        return (false);
+        json = nlohmann::json::parse (body, nullptr, false);
+
+        return (!json.is_discarded () && json.is_object ());
     }
 
-    const auto found = json.find ("volume");
-
-    if (found == json.end () || !found->is_number_integer ())
+    // A whole number from low to high under key, set into value only when it is one. Read as unsigned
+    // too, so that a huge positive number is not taken for a small or negative one.
+    bool wholeIn (const std::string &body, const char *key, std::int64_t low, std::int64_t high, std::int64_t &value)
     {
-        return (false);
-    }
+        nlohmann::json json;
 
-    // Read as unsigned too, so a huge positive value is not taken for a small or negative one.
-    if (found->is_number_unsigned ())
-    {
-        const std::uint64_t value = found->get<std::uint64_t> ();
-
-        if (value > 100)
+        if (!asObject (body, json))
         {
             return (false);
         }
 
-        level = static_cast<int> (value);
+        const auto found = json.find (key);
+
+        if (found == json.end () || !found->is_number_integer ())
+        {
+            return (false);
+        }
+
+        std::int64_t got = 0;
+
+        if (found->is_number_unsigned ())
+        {
+            const std::uint64_t positive = found->get<std::uint64_t> ();
+
+            if (high < 0 || positive > static_cast<std::uint64_t> (high))
+            {
+                return (false);
+            }
+
+            got = static_cast<std::int64_t> (positive);
+        }
+        else
+        {
+            got = found->get<std::int64_t> ();
+        }
+
+        if (got < low || got > high)
+        {
+            return (false);
+        }
+
+        value = got;
 
         return (true);
     }
 
-    const std::int64_t value = found->get<std::int64_t> ();
+    // One of the allowed words under key, set into value only when it is one.
+    bool oneOf (const std::string &body, const char *key, std::initializer_list<const char *> allowed, std::string &value)
+    {
+        nlohmann::json json;
 
-    if (value < 0 || value > 100)
+        if (!asObject (body, json))
+        {
+            return (false);
+        }
+
+        const auto found = json.find (key);
+
+        if (found == json.end () || !found->is_string ())
+        {
+            return (false);
+        }
+
+        const std::string got = found->get<std::string> ();
+
+        for (const char *word : allowed)
+        {
+            if (got == word)
+            {
+                value = got;
+                return (true);
+            }
+        }
+
+        return (false);
+    }
+}
+
+bool WebJson::parseVolume (const std::string &body, int &level)
+{
+    std::int64_t value = 0;
+
+    if (!wholeIn (body, "volume", 0, 100, value))
     {
         return (false);
     }
@@ -135,37 +198,14 @@ bool WebJson::parseVolume (const std::string &body, int &level)
 
 bool WebJson::parsePlayback (const std::string &body, std::string &action)
 {
-    const nlohmann::json json = nlohmann::json::parse (body, nullptr, false);
-
-    if (json.is_discarded () || !json.is_object ())
-    {
-        return (false);
-    }
-
-    const auto found = json.find ("action");
-
-    if (found == json.end () || !found->is_string ())
-    {
-        return (false);
-    }
-
-    const std::string value = found->get<std::string> ();
-
-    if (value != "play" && value != "pause")
-    {
-        return (false);
-    }
-
-    action = value;
-
-    return (true);
+    return (oneOf (body, "action", { "play", "pause" }, action));
 }
 
 bool WebJson::parsePower (const std::string &body, bool &on)
 {
-    const nlohmann::json json = nlohmann::json::parse (body, nullptr, false);
+    nlohmann::json json;
 
-    if (json.is_discarded () || !json.is_object ())
+    if (!asObject (body, json))
     {
         return (false);
     }
@@ -178,6 +218,70 @@ bool WebJson::parsePower (const std::string &body, bool &on)
     }
 
     on = found->get<bool> ();
+
+    return (true);
+}
+
+bool WebJson::parsePreset (const std::string &body, int &preset)
+{
+    std::int64_t value = 0;
+
+    if (!wholeIn (body, "preset", 1, 6, value))
+    {
+        return (false);
+    }
+
+    preset = static_cast<int> (value);
+
+    return (true);
+}
+
+bool WebJson::parseSkip (const std::string &body, std::string &direction)
+{
+    return (oneOf (body, "direction", { "next", "previous" }, direction));
+}
+
+bool WebJson::parseSource (const std::string &body, std::string &source)
+{
+    return (oneOf (body, "source", { "bluetooth", "aux" }, source));
+}
+
+bool WebJson::parseSelect (const std::string &body, int &preset)
+{
+    std::int64_t value = 0;
+
+    if (!wholeIn (body, "preset", 1, 666, value))
+    {
+        return (false);
+    }
+
+    preset = static_cast<int> (value);
+
+    return (true);
+}
+
+bool WebJson::buttonsOf (int preset, std::vector<int> &buttons)
+{
+    if (preset < 1 || preset > 666)
+    {
+        return (false);
+    }
+
+    std::vector<int> digits;
+
+    for (int value = preset; value != 0; value /= 10)
+    {
+        const int digit = value % 10;
+
+        if (digit < 1 || digit > 6)
+        {
+            return (false);
+        }
+
+        digits.insert (digits.begin (), digit);
+    }
+
+    buttons = digits;
 
     return (true);
 }

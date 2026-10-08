@@ -186,6 +186,75 @@ static void testParsePower ()
     CHECK (on);                                                          // left alone on failure
 }
 
+static void testParsePreset ()
+{
+    int preset = -1;
+
+    CHECK (WebJson::parsePreset ("{\"preset\": 1}", preset) && preset == 1);
+    CHECK (WebJson::parsePreset ("{\"preset\": 6}", preset) && preset == 6);
+
+    preset = -1;
+
+    CHECK (!WebJson::parsePreset ("{\"preset\": 0}", preset));
+    CHECK (!WebJson::parsePreset ("{\"preset\": 7}", preset));            // the remote has six
+    CHECK (!WebJson::parsePreset ("{\"preset\": 11}", preset));           // a combo is pressed as two
+    CHECK (!WebJson::parsePreset ("{\"preset\": \"1\"}", preset));
+    CHECK (!WebJson::parsePreset ("{\"preset\": 18446744073709551617}", preset));
+    CHECK (preset == -1);                                                // left alone on failure
+}
+
+static void testParseSkipAndSource ()
+{
+    std::string value = "unset";
+
+    CHECK (WebJson::parseSkip ("{\"direction\": \"next\"}", value) && value == "next");
+    CHECK (WebJson::parseSkip ("{\"direction\": \"previous\"}", value) && value == "previous");
+    CHECK (WebJson::parseSource ("{\"source\": \"bluetooth\"}", value) && value == "bluetooth");
+    CHECK (WebJson::parseSource ("{\"source\": \"aux\"}", value) && value == "aux");
+
+    value = "unset";
+
+    CHECK (!WebJson::parseSkip ("{\"direction\": \"prev\"}", value));
+    CHECK (!WebJson::parseSkip ("{\"direction\": \"NEXT_TRACK\"}", value));  // the API's names, not the keys'
+    CHECK (!WebJson::parseSource ("{\"source\": \"BLUETOOTH\"}", value));
+    CHECK (!WebJson::parseSource ("{\"source\": \"upnp\"}", value));         // only the speaker's own inputs
+    CHECK (!WebJson::parseSource ("{\"direction\": \"aux\"}", value));
+    CHECK (value == "unset");                                            // left alone on failure
+}
+
+static void testSelectAndButtons ()
+{
+    int preset = -1;
+
+    CHECK (WebJson::parseSelect ("{\"preset\": 111}", preset) && preset == 111);
+    CHECK (WebJson::parseSelect ("{\"preset\": 1}", preset) && preset == 1);
+
+    preset = -1;
+
+    CHECK (!WebJson::parseSelect ("{\"preset\": 0}", preset));
+    CHECK (!WebJson::parseSelect ("{\"preset\": 667}", preset));
+    CHECK (!WebJson::parseSelect ("{\"preset\": \"111\"}", preset));
+    CHECK (preset == -1);
+
+    std::vector<int> buttons { 9 };
+
+    CHECK (WebJson::buttonsOf (1, buttons) && buttons == std::vector<int> ({ 1 }));
+    CHECK (WebJson::buttonsOf (13, buttons) && buttons == std::vector<int> ({ 1, 3 }));
+    CHECK (WebJson::buttonsOf (111, buttons) && buttons == std::vector<int> ({ 1, 1, 1 }));
+    CHECK (WebJson::buttonsOf (666, buttons) && buttons == std::vector<int> ({ 6, 6, 6 }));
+
+    buttons = { 9 };
+
+    CHECK (!WebJson::buttonsOf (7, buttons));                            // no button 7
+    CHECK (!WebJson::buttonsOf (10, buttons));                           // nor 0
+    CHECK (!WebJson::buttonsOf (17, buttons));
+    CHECK (!WebJson::buttonsOf (601, buttons));
+    CHECK (!WebJson::buttonsOf (1111, buttons));                         // three buttons at most
+    CHECK (!WebJson::buttonsOf (0, buttons));
+    CHECK (!WebJson::buttonsOf (-11, buttons));
+    CHECK (buttons == std::vector<int> ({ 9 }));                         // left alone on failure
+}
+
 static long long millisecondsSince (std::chrono::steady_clock::time_point start)
 {
     return (std::chrono::duration_cast<std::chrono::milliseconds> (std::chrono::steady_clock::now () - start).count ());
@@ -334,6 +403,13 @@ static void testNowPlayingJson ()
     // With no volume given, the fields are present but null, never a made-up 0.
     CHECK (json["volume"].is_null ());
     CHECK (json["muted"].is_null ());
+
+    // Likewise a station with no preset given: no preset button stands for it.
+    CHECK (json["station_preset"].is_null ());
+
+    const nlohmann::json onPreset = WebJson::nowPlaying (now, "K-LOVE", SoundTouchClient::Volume (), 1);
+
+    CHECK (onPreset["station_preset"].get<int> () == 1);
 }
 
 static void testNowPlayingVolumeJson ()
@@ -387,6 +463,9 @@ int main ()
     testParseVolume ();
     testParsePlayback ();
     testParsePower ();
+    testParsePreset ();
+    testParseSkipAndSource ();
+    testSelectAndButtons ();
     testLiveSignal ();
     testStreamJson ();
     testStreamsJson ();

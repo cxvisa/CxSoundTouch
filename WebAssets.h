@@ -59,6 +59,41 @@ inline const char *DASHBOARD_HTML = R"PAGE(<!doctype html>
   .tbtn.busy, .tbtn.busy:disabled { opacity: 1; animation: pulse 1s ease-in-out infinite; }
   .tbtn.bad { box-shadow: 0 0 0 3px rgba(248,81,73,.6); }
   @keyframes pulse { 50% { opacity: .45; } }
+  .tbtn.skip svg { width: 18px; height: 18px; }
+  .deck { display: none; flex-basis: 100%; align-items: stretch; gap: 14px; flex-wrap: wrap;
+          padding-top: 16px; border-top: 1px solid var(--line); }
+  .deck.show { display: flex; }
+  .presets { flex: 1; min-width: 300px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+  .pbtn { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; padding: 8px 10px;
+          border-radius: 10px; text-align: left; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+  .pbtn .pnum { font-size: 17px; font-weight: 700; line-height: 1.15; }
+  .pbtn .pname { max-width: 100%; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pbtn.empty .pnum, .pbtn.empty .pname { opacity: .5; }
+  .pbtn:active { background: var(--line); }
+  .sources { display: flex; gap: 8px; }
+  .sbtn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-width: 84px;
+          padding: 8px 12px; border-radius: 10px; font-size: 12px; color: var(--muted);
+          user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+  .sbtn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  .pbtn.on, .sbtn.on { border-color: var(--accent); background: rgba(76,194,255,.12); }
+  .pbtn.on .pnum, .sbtn.on { color: var(--accent); }
+  .pbtn.busy, .sbtn.busy { animation: pulse 1s ease-in-out infinite; }
+  .pbtn.bad, .sbtn.bad { box-shadow: 0 0 0 3px rgba(248,81,73,.6); }
+  .pentry { display: flex; flex-direction: column; justify-content: center; gap: 4px; width: 136px; }
+  .pentry input { width: 100%; height: 32px; padding: 0 8px; text-align: center; font: inherit; font-size: 16px; font-weight: 650;
+                  letter-spacing: .14em; font-variant-numeric: tabular-nums; color: var(--fg); background: var(--panel2);
+                  border: 1px solid var(--line); border-radius: 8px; }
+  .pentry input::placeholder { color: var(--muted); font-weight: 400; letter-spacing: normal; }
+  .pentry input:focus { outline: none; border-color: var(--accent); }
+  .pentry.ok input { border-color: var(--ok); }
+  .pentry.bad input { border-color: #f85149; }
+  .pentry.busy input { animation: pulse 1s ease-in-out infinite; }
+  .pcount { display: block; height: 2px; width: 0; border-radius: 2px; background: var(--accent); }
+  .pcount.run { animation-name: countdown; animation-timing-function: linear; animation-fill-mode: forwards; }
+  @keyframes countdown { from { width: 100%; } to { width: 0; } }
+  .phint { font-size: 11.5px; line-height: 1.25; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pentry.ok .phint { color: var(--ok); }
+  .pentry.bad .phint { color: #f85149; }
   .hero .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .12em; }
   .hero .station { font-size: 26px; font-weight: 700; margin: 4px 0 2px; }
   .hero .song { font-size: 17px; color: var(--fg); }
@@ -138,10 +173,35 @@ inline const char *DASHBOARD_HTML = R"PAGE(<!doctype html>
       <button class="tbtn power" id="np-power" type="button" aria-label="Power" title="Switch off">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v8"/><path d="M7.05 6.6a7.5 7.5 0 1 0 9.9 0"/></svg>
       </button>
+      <button class="tbtn skip" id="np-prev" type="button" aria-label="Previous" title="Previous">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2.5v14H6zM19 5.5v13L9.5 12z"/></svg>
+      </button>
       <button class="tbtn play" id="np-play" type="button" aria-label="Play or pause" title="Play">
         <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14l11-7z"/></svg>
         <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
       </button>
+      <button class="tbtn skip" id="np-next" type="button" aria-label="Next" title="Next">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 5H18v14h-2.5zM5 5.5v13l9.5-6.5z"/></svg>
+      </button>
+    </div>
+    <div class="deck" id="np-deck">
+      <div class="presets" id="np-presets"></div>
+      <div class="pentry" id="np-pentry">
+        <input id="np-pinput" type="text" inputmode="numeric" maxlength="3" autocomplete="off" spellcheck="false"
+               placeholder="Preset" aria-label="Preset number" title="Type a preset, such as 111, then Enter">
+        <span class="pcount" id="np-pcount"></span>
+        <span class="phint" id="np-phint"></span>
+      </div>
+      <div class="sources">
+        <button class="sbtn" id="np-bt" type="button" title="Switch to Bluetooth">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>
+          <span>Bluetooth</span>
+        </button>
+        <button class="sbtn" id="np-aux" type="button" title="Switch to AUX">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v3"/><path d="M10.25 5h3.5v4.5h-3.5z"/><path d="M10.25 7.25h3.5"/><path d="M9 9.5h6V16H9z"/><path d="M12 16v6"/></svg>
+          <span>AUX</span>
+        </button>
+      </div>
     </div>
   </section>
 
@@ -329,9 +389,199 @@ function wireTransport() {
     transportAction(power, "/api/power", { on: !power.classList.contains("on") }));
 }
 
+// Presets, the skip keys and the sources: the remote's buttons, and the speaker's own. They reach
+// the speaker one after another in the order pressed, so that 1 then 1 makes the combo for preset 11
+// as on the remote. A button pulses while a press of it is on its way, and rings red if one was not
+// taken; what it led to shows as the speaker reports it.
+let remoteQueue = Promise.resolve();
+const deck = { source: "", stationPreset: null };
+
+function remoteAction(button, path, body) {
+  button.dataset.pending = String(Number(button.dataset.pending || 0) + 1);
+  button.classList.add("busy");
+  remoteQueue = remoteQueue.then(async () => {
+    let ok = false;
+    try {
+      const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      ok = r.ok;
+    } catch (e) { }
+    const pending = Number(button.dataset.pending) - 1;
+    button.dataset.pending = String(pending);
+    if (pending <= 0) button.classList.remove("busy");
+    if (!ok) {
+      button.classList.add("bad");
+      setTimeout(() => button.classList.remove("bad"), 1500);
+    }
+  });
+}
+
+function renderPresets(streams) {
+  presetNames = new Map(streams.filter(s => s.preset != null && s.preset > 0).map(s => [s.preset, s.display_name || s.name]));
+  let html = "";
+  for (let n = 1; n <= 6; n++) {
+    const st = streams.find(s => s.preset === n);
+    const name = st ? (st.display_name || st.name) : "";
+    html += '<button class="pbtn' + (st ? "" : " empty") + '" type="button" data-preset="' + n + '" title="' +
+            esc(st ? "Preset " + n + ": " + name : "Preset " + n + " (nothing on it)") + '">' +
+            '<span class="pnum">' + n + '</span><span class="pname">' + (st ? esc(name) : "\u2014") + "</span></button>";
+  }
+  $("np-presets").innerHTML = html;
+  renderDeck(deck.source, deck.stationPreset);
+  if (!entry.timer) renderEntry();
+}
+
+// The preset entry. Type a preset and press Enter, or press the tiles: they collect digits as the
+// remote's buttons do, but allow more time between presses than a hand on the remote needs: a mouse
+// has further to travel. A press waits KEYPAD_MS for the next (never less than control's own combo
+// window), and a combo missed by being too slow would play the wrong station, so it is generous. A
+// preset no longer one can follow is played at once; any other when that time is up, or on Enter.
+// Either way the whole number goes to /api/select, which presses its buttons well inside control's
+// combo window. What is entered is judged as it is entered: a preset with a station on it, the start
+// of a longer one, or neither.
+const KEYPAD_MS = 1500;
+const entry = { digits: "", keypad: false, timer: null };
+let comboWindowMs = 700;
+let presetNames = new Map();
+
+function keypadWindow() { return Math.max(KEYPAD_MS, comboWindowMs); }
+
+function canGoOn(digits) {
+  for (const n of presetNames.keys()) {
+    const s = String(n);
+    if (s.length > digits.length && s.startsWith(digits)) return true;
+  }
+  return false;
+}
+
+function judge(digits) {
+  if (!digits) return { state: "", text: "1\u20136, or a combo such as 111" };
+  if (/[^1-6]/.test(digits)) return { state: "bad", text: "Buttons are 1 to 6" };
+  const name = presetNames.get(Number(digits));
+  if (name) return { state: "ok", text: "\u2192 " + name };
+  if (canGoOn(digits)) return { state: "more", text: digits + "\u2026" };
+  return { state: "bad", text: "Nothing on preset " + digits };
+}
+
+function renderEntry(text, state) {
+  const judged = (text == null) ? judge(entry.digits) : { text: text, state: state || "" };
+  const input = $("np-pinput");
+  if (input.value !== entry.digits) input.value = entry.digits;
+  $("np-pentry").classList.toggle("ok", judged.state === "ok");
+  $("np-pentry").classList.toggle("bad", judged.state === "bad");
+  $("np-phint").textContent = judged.text;
+}
+
+function countdown(ms) {
+  const bar = $("np-pcount");
+  bar.classList.remove("run");
+  if (!ms) return;
+  void bar.offsetWidth;                  // so that the animation starts over
+  bar.style.animationDuration = ms + "ms";
+  bar.classList.add("run");
+}
+
+function stopWaiting() {
+  clearTimeout(entry.timer);
+  entry.timer = null;
+  countdown(0);
+}
+
+function keypad(digit) {
+  if (!entry.keypad || entry.digits.length >= 3) entry.digits = "";
+  entry.keypad = true;
+  entry.digits += digit;
+  stopWaiting();
+  const judged = judge(entry.digits);
+  renderEntry();
+  if (judged.state === "ok" && !canGoOn(entry.digits)) { sendPreset(); return; }
+  if (judged.state === "ok" || judged.state === "more") {
+    countdown(keypadWindow());
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      countdown(0);
+      if (judge(entry.digits).state === "ok") { sendPreset(); return; }
+      renderEntry("Nothing on preset " + entry.digits, "bad");
+      entry.keypad = false;
+    }, keypadWindow());
+    return;
+  }
+  entry.keypad = false;                  // shown as wrong; the next press starts afresh
+}
+
+function sendPreset() {
+  stopWaiting();
+  const digits = entry.digits;
+  entry.keypad = false;
+  if (judge(digits).state !== "ok") { renderEntry(); return; }
+  const box = $("np-pentry");
+  box.classList.add("busy");
+  remoteQueue = remoteQueue.then(async () => {
+    let answer = {}, ok = false;
+    try {
+      const r = await fetch("/api/select", { method: "POST", headers: { "Content-Type": "application/json" },
+                                             body: JSON.stringify({ preset: Number(digits) }) });
+      ok = r.ok;
+      answer = await r.json().catch(() => ({}));
+    } catch (e) { }
+    box.classList.remove("busy");
+    if (entry.digits !== digits || entry.timer) return;      // something new was entered meanwhile
+    if (ok) {
+      entry.digits = "";
+      renderEntry("Playing " + (answer.station || presetNames.get(Number(digits)) || digits), "ok");
+      setTimeout(() => { if (!entry.digits && !entry.timer) renderEntry(); }, 2500);
+    } else {
+      renderEntry(answer.error || "The speaker did not take it", "bad");
+    }
+  });
+}
+
+function wireEntry() {
+  const input = $("np-pinput");
+  input.addEventListener("input", () => {
+    stopWaiting();
+    entry.keypad = false;
+    entry.digits = input.value.replace(/\D/g, "").slice(0, 3);
+    renderEntry();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); sendPreset(); }
+    else if (e.key === "Escape") { stopWaiting(); entry.digits = ""; entry.keypad = false; renderEntry(); input.blur(); }
+  });
+  renderEntry();
+}
+
+function renderDeck(source, stationPreset) {
+  deck.source = source || "";
+  deck.stationPreset = (stationPreset == null) ? null : Number(stationPreset);
+  $("np-deck").classList.toggle("show", deck.source !== "");
+  for (const b of document.querySelectorAll("#np-presets .pbtn")) {
+    b.classList.toggle("on", deck.source === "UPNP" && Number(b.dataset.preset) === deck.stationPreset);
+  }
+  $("np-bt").classList.toggle("on", deck.source === "BLUETOOTH");
+  $("np-aux").classList.toggle("on", deck.source === "AUX");
+  const canSkip = deck.source !== "" && deck.source !== "STANDBY" && deck.source !== "AUX" && deck.source !== "INVALID_SOURCE";
+  $("np-prev").disabled = !canSkip;
+  $("np-next").disabled = !canSkip;
+}
+
+function wireDeck() {
+  $("np-presets").addEventListener("click", (e) => {
+    const b = e.target.closest(".pbtn");
+    if (b) keypad(b.dataset.preset);
+  });
+  wireEntry();
+  $("np-prev").addEventListener("click", () => remoteAction($("np-prev"), "/api/skip", { direction: "previous" }));
+  $("np-next").addEventListener("click", () => remoteAction($("np-next"), "/api/skip", { direction: "next" }));
+  $("np-bt").addEventListener("click", () => remoteAction($("np-bt"), "/api/source", { source: "bluetooth" }));
+  $("np-aux").addEventListener("click", () => remoteAction($("np-aux"), "/api/source", { source: "aux" }));
+}
+
+// What to call a source when no station of control's is playing on it.
+const SOURCE_NAMES = { STANDBY: "Standby", BLUETOOTH: "Bluetooth", AUX: "AUX", INVALID_SOURCE: "Idle", UPNP: "UPnP" };
+
 function renderNowPlaying(np) {
   const standby = np.source === "STANDBY";
-  const station = standby ? "Standby" : (np.station || np.source || "\u2014");
+  const station = standby ? "Standby" : (np.station || SOURCE_NAMES[np.source] || np.source || "\u2014");
   $("np-station").textContent = station;
   $("np-song").textContent = standby ? "" : (np.title || "");
   const bits = [];
@@ -341,6 +591,7 @@ function renderNowPlaying(np) {
   $("np-meta").textContent = bits.join("  \u00b7  ");
   renderVolume(np.volume, np.muted);
   renderTransport(np.source, np.status);
+  renderDeck(np.source, np.station_preset);
 }
 
 async function loadNowPlaying() {
@@ -391,6 +642,9 @@ async function loadStatic() {
     $("mode").textContent = config.embedded ? "control --web" : "web";
     $("mode").className = "pill" + (config.embedded ? " on" : "");
 
+    comboWindowMs = Number(config.combo_window_ms) || 700;
+    renderPresets(streams);
+
     // Streams table
     let s = "<table><tr><th>Preset</th><th>Name</th><th>Display</th><th>URL</th></tr>";
     for (const st of streams) {
@@ -428,6 +682,7 @@ async function loadStatic() {
         (c.pause_minutes != null ? " <span class='muted'>(~" + esc(c.pause_minutes) + " min pause)</span>" : "") + "</div>" +
       "<div>Title offset</div><div>" + esc(c.title_offset_seconds) + " s</div>" +
       "<div>Resume</div><div>" + (c.resume ? "on" : "off") + "</div>" +
+      "<div>Combo window</div><div>" + esc(c.combo_window_ms) + " ms</div>" +
       "<div>Version</div><div><code>" + esc(c.version) + "</code></div>";
 
     setOnline(true);
@@ -437,6 +692,7 @@ async function loadStatic() {
 $("refresh").onclick = () => { loadStatic(); loadNowPlaying(); };
 wireVolume();
 wireTransport();
+wireDeck();
 loadStatic();
 followLive().then(() => { loadNowPlaying(); setInterval(loadNowPlaying, 3000); });
 </script>

@@ -36,7 +36,8 @@ $(TEST_TARGET): $(TEST_SRC) HttpUtil.h WebJson.h LiveSignal.h StreamConfig.h Dev
 	$(CXX) $(CXXFLAGS) -I. -o $@ $(TEST_SRC)
 
 # End to end, with no real speaker: runs the built program against test/fake_speaker.py (a stand-in
-# SoundTouch on 127.0.0.2) and checks the dashboard's live updates. Needs python3, nothing else.
+# SoundTouch on 127.0.0.2) and checks the dashboard, live, and each of its controls. Needs python3,
+# nothing else.
 e2e: $(TARGET)
 	python3 test/web_live_check.py
 

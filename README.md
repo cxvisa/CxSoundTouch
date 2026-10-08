@@ -19,8 +19,8 @@ Nothing depends on the Bose cloud, and the speaker's firmware and server setting
   song.
 - **Starts the last station again by itself** at start-up and after an unexpected stop, but never
   over a pause, standby or another source; reconnects when the speaker reboots.
-- **A web dashboard** (`control --web`): what is playing, live, with the volume, Play/Pause and
-  Power at hand ([The dashboard](#the-dashboard)).
+- **A web dashboard** (`control --web`): what is playing, live, with the presets, ⏮ ⏯ ⏭, Power,
+  Bluetooth and AUX, and the volume at hand ([The dashboard](#the-dashboard)).
 - **Command line** to find speakers, play, stop, see what is playing and program the presets
   ([Usage](#usage)).
 - **Runs as a systemd service** ([systemd/README.md](systemd/README.md)) or a static container
@@ -58,15 +58,15 @@ the original AirPlay.
 ```bash
 make          # build the cxstcc binary (cx sound touch c++ controller)
 make test     # unit tests of the dashboard's logic: no speaker, no network
-make e2e      # the dashboard's live updates, end to end, against a fake speaker
+make e2e      # the dashboard and its controls, end to end, against a fake speaker
 make clean
 ```
 
 `make e2e` needs only `python3`. It runs the built binary against `test/fake_speaker.py`, a stand-in
-SoundTouch on 127.0.0.2 (its event stream on 8080, its Web API on 8090) that sends the XML a
-SoundTouch 30 sends, so no real speaker is touched. The fake runs on its own for trying things by
-hand too: `python3 test/fake_speaker.py --data-dir /tmp/fake-st` prepares that data dir and prints
-the `cxstcc` and `curl` commands to drive it.
+SoundTouch on 127.0.0.2 (its event stream on 8080, its Web API on 8090, UPnP on 8091) that sends the
+XML a SoundTouch 30 sends, so no real speaker is touched. The fake runs on its own for trying things
+by hand too: `python3 test/fake_speaker.py --data-dir /tmp/fake-st` prepares that data dir and
+prints the `cxstcc` and `curl` commands to drive it.
 
 On Fedora, `sudo make deps-fedora` installs what the build needs: `gcc-c++`, `make`,
 `libcurl-devel`, `libwebsockets-devel`, `pugixml-devel` and `json-devel`. dnf lists them and asks
@@ -128,11 +128,19 @@ option `control` or `nowplaying` does not know is an error, not silently ignored
 
 `control --web` serves a web dashboard on port 8081 (`--web-port`, or `SOUNDTOUCH_WEB_PORT`) beside
 what `control` does; `web` serves it on its own. It shows what is playing, the speaker's volume, the
-streams, the speakers found and the settings, and works the speaker as the remote does: Play and
-Pause, Power, and the volume, by its slider, by − and + (hold to repeat), or by typing a level. Power
-on does what the remote's power button does. Inside `control` the page hears of a change the moment
-the speaker reports it; on its own it looks every 3s. It listens on every interface, so anyone on
-the network can use it, as anyone there can already use the speaker's own Web API; `--web-bind
+streams, the speakers found and the settings, and works the speaker as its remote and buttons do:
+the six presets, named after their stations, ⏮ and ⏭, Play and Pause, Power, Bluetooth and AUX, and
+the volume, by its slider, by − and + (hold to repeat), or by typing a level. The preset tiles make
+the same combos as the remote's buttons (1 then 1 is preset 11), but a mouse has further to go than
+a thumb, so the page collects the digits, allowing 1.5s between them (or the combo window, if
+longer), and then presses them for you well inside the combo window; a preset nothing longer starts
+with plays at once. Or type a preset into the box beside them: it says as you type whether it is
+one, and which station it plays, and Enter plays it. A number not made of the buttons 1 to 6, or
+with no station on it, is never sent. Each control sends the speaker the remote's own key, or for
+Bluetooth and AUX its source, so `control` takes it just as it takes the remote, and power on does
+what the remote's power button does. Inside `control` the page hears of a change the moment the
+speaker reports it; on its own it looks every 3s. It listens on every interface, so anyone on the
+network can use it, as anyone there can already use the speaker's own Web API; `--web-bind
 127.0.0.1` keeps it to this machine.
 
 ## Configuration
@@ -498,7 +506,7 @@ docker run -d --name soundtouch --restart unless-stopped --init --network host \
 
 | Port | Use |
 |------|-----|
-| 8090 | Bose REST API (`/nowPlaying`, `/presets`, `/key`, `/info`, `/volume`) |
+| 8090 | Bose REST API (`/nowPlaying`, `/presets`, `/key`, `/info`, `/volume`, `/select`) |
 | 8091 | UPnP AVTransport control |
 | 8080 | `gabbo` WebSocket event stream |
 | 1900 | SSDP discovery (UDP multicast) |

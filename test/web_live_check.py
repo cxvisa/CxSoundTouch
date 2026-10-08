@@ -10,10 +10,17 @@ It runs the built ./cxstcc against a fake SoundTouch on 127.0.0.2, from a throwa
                  reaches every waiting dashboard at once, while anything but a JSON level from 0 to 100
                  is refused; POST /api/playback and /api/power press PLAY, PAUSE and POWER and answer
                  once the speaker has done it, pressing POWER only when it is not already that way;
+                 POST /api/preset presses a preset (control plays its station, from standby too; 1
+                 then 3 is the combo for 13, and 1, 1, 1 the three-digit combo for 111, while 1, 1
+                 waits out the combo window first), /api/skip presses NEXT_TRACK or PREV_TRACK
+                 (control starts its stream again), and /api/source switches to Bluetooth or AUX;
                  stopping does not sit out a hold
   web            (standalone) has no /api/live/wait, so the page polls; /api/nowplaying still
-                 carries the volume, read from the speaker; setting the volume, play/pause and power
-                 work there too
+                 carries the volume, read from the speaker, and the station's preset; the volume,
+                 play/pause, power, presets and sources work there too
+
+It plays its own stations (presets 1, 2, 11, 13 and 111, on addresses nothing fetches), so it does
+not depend on streams.json.
 
 Run: make e2e (or python3 test/web_live_check.py). Exits non-zero if any check fails. To run it beside
 a fake already up by hand, move it with E2E_CONTROL_PORT, E2E_WEB_PORT (default 8094 and 8095) and
@@ -44,6 +51,21 @@ HOLD = 3.0          # WebServer::LIVE_HOLD
 PLAYBACK_SETTLE = 5.0   # WebServer::PLAYBACK_SETTLE
 PROMPT = 0.5        # a generous bound for "at once"; in practice a few milliseconds
 ELSEWHERE = "http://example.invalid/radio"      # a stream that is not control's, so control lets it be
+
+# The stations the check plays, on presets 1, 2, 11, 13 and 111 (so 1 and 11 wait for another digit,
+# and 1 then 3, or 1, 1, 1, are combos), on addresses nothing fetches: the fake speaker only reports
+# playing them. The combo window is control's default, 700 ms.
+TEST_STREAMS = {
+    "combo_window_ms": 700,
+    "streams": [
+        {"name": "one", "display_name": "Station One", "url": "http://example.invalid/one", "preset": 1},
+        {"name": "two", "display_name": "Station Two", "url": "http://example.invalid/two", "preset": 2},
+        {"name": "eleven", "display_name": "Station Eleven", "url": "http://example.invalid/eleven", "preset": 11},
+        {"name": "thirteen", "display_name": "Station Thirteen", "url": "http://example.invalid/thirteen", "preset": 13},
+        {"name": "one-eleven", "display_name": "Station 111", "url": "http://example.invalid/one-eleven", "preset": 111},
+    ],
+}
+COMBO_WINDOW = TEST_STREAMS["combo_window_ms"] / 1000.0
 
 results = []
 
@@ -102,6 +124,32 @@ def playback(port, action):
 
 def power(port, on):
     return send(port, "POST", "/api/power", json.dumps({"on": on}), "application/json")
+
+
+def preset(port, number):
+    return send(port, "POST", "/api/preset", json.dumps({"preset": number}), "application/json")
+
+
+def skip(port, direction):
+    return send(port, "POST", "/api/skip", json.dumps({"direction": direction}), "application/json")
+
+
+def source(port, which):
+    return send(port, "POST", "/api/source", json.dumps({"source": which}), "application/json")
+
+
+def select(port, number):
+    return send(port, "POST", "/api/select", json.dumps({"preset": number}), "application/json")
+
+
+def wait_until(condition, timeout=8.0):
+    """Polls condition until it is true or timeout passes; whether it came true."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()
 
 
 class Waiter(threading.Thread):
@@ -270,6 +318,120 @@ def check_transport(speaker):
           "keys %s" % speaker.keys[keys:])
 
 
+def check_deck(speaker):
+    def live():
+        return get(CONTROL_PORT, "/api/live")[1]
+
+    def playing(station, number):
+        state = live()
+        return (state.get("station") == station and state.get("station_preset") == number
+                and state.get("source") == "UPNP" and state.get("status") == "PLAY_STATE")
+
+    # In standby, as check_transport leaves it: a preset wakes it, as on the remote.
+    keys, plays = len(speaker.keys), len(speaker.plays)
+    started = time.monotonic()
+    status, _ = preset(CONTROL_PORT, 1)
+    came = wait_until(lambda: playing("Station One", 1))
+    check(status == 200 and came and speaker.keys[keys:] == ["PRESET_1"] and speaker.plays[plays:] == ["http://example.invalid/one"],
+          "preset 1 presses PRESET_1, and control plays its station, from standby too",
+          "%.1f s to playing, keys %s" % (time.monotonic() - started, speaker.keys[keys:]))
+
+    keys = len(speaker.keys)
+    first, _ = preset(CONTROL_PORT, 1)
+    second, _ = preset(CONTROL_PORT, 3)
+    came = wait_until(lambda: playing("Station Thirteen", 13))
+    check(first == 200 and second == 200 and came and speaker.keys[keys:] == ["PRESET_1", "PRESET_3"],
+          "1 then 3, pressed quickly, make the combo for preset 13, as on the remote",
+          "keys %s, station %r" % (speaker.keys[keys:], live().get("station")))
+
+    keys = len(speaker.keys)
+    statuses = [preset(CONTROL_PORT, 1)[0] for _ in range(3)]
+    came = wait_until(lambda: playing("Station 111", 111))
+    check(statuses == [200] * 3 and came and speaker.keys[keys:] == ["PRESET_1"] * 3,
+          "1, 1, 1, pressed quickly, make the three-digit combo for preset 111",
+          "keys %s, station %r" % (speaker.keys[keys:], live().get("station")))
+
+    keys = len(speaker.keys)
+    statuses = [preset(CONTROL_PORT, 1)[0] for _ in range(2)]
+    pressed = time.monotonic()
+    came = wait_until(lambda: playing("Station Eleven", 11))
+    waited = time.monotonic() - pressed
+    check(statuses == [200] * 2 and came and speaker.keys[keys:] == ["PRESET_1"] * 2 and waited >= COMBO_WINDOW - 0.1,
+          "1, 1 waits out the combo window for a third digit (preset 111 could follow), then plays preset 11",
+          "%.2f s after the second press, window %.1f s" % (waited, COMBO_WINDOW))
+
+    preset(CONTROL_PORT, 2)
+    check(wait_until(lambda: playing("Station Two", 2)), "preset 2 plays its station", "station %r" % live().get("station"))
+
+    status, config, _ = get(CONTROL_PORT, "/api/config")
+    check(status == 200 and config.get("combo_window_ms") == TEST_STREAMS["combo_window_ms"],
+          "/api/config gives control's combo window, for the page's keypad", "%r ms" % config.get("combo_window_ms"))
+
+    for number, station, buttons in ((13, "Station Thirteen", ["PRESET_1", "PRESET_3"]),
+                                     (111, "Station 111", ["PRESET_1"] * 3)):
+        keys = len(speaker.keys)
+        status, answer = select(CONTROL_PORT, number)
+        came = wait_until(lambda: playing(station, number))
+        check(status == 200 and answer.get("station") == station and speaker.keys[keys:] == buttons and came,
+              "/api/select %d presses %s within the combo window, and control plays %s" % (number, ", ".join(buttons), station),
+              "status %d, keys %s" % (status, speaker.keys[keys:]))
+
+    keys = len(speaker.keys)
+    statuses = [select(CONTROL_PORT, 17), select(CONTROL_PORT, 34), select(CONTROL_PORT, 0), select(CONTROL_PORT, 667),
+                select(CONTROL_PORT, "13"), send(CONTROL_PORT, "POST", "/api/select", '{"preset": 13}', "text/plain")]
+    codes = [status for status, _ in statuses]
+    check(codes == [400, 404, 400, 400, 400, 415] and len(speaker.keys) == keys
+          and "1 to 6" in statuses[0][1].get("error", "") and "nothing on preset 34" in statuses[1][1].get("error", "")
+          and fetch(CONTROL_PORT, "/api/select")[0] == 405,
+          "/api/select refuses a number not made of buttons 1 to 6 (400) or with no station (404), pressing nothing",
+          "statuses %s" % codes)
+
+    status, _ = select(CONTROL_PORT, 2)
+    check(status == 200 and wait_until(lambda: playing("Station Two", 2)), "/api/select 2 plays preset 2",
+          "station %r" % live().get("station"))
+
+    for direction, key in (("next", "NEXT_TRACK"), ("previous", "PREV_TRACK")):
+        keys, plays = len(speaker.keys), len(speaker.plays)
+        status, _ = skip(CONTROL_PORT, direction)
+        came = wait_until(lambda: len(speaker.plays) > plays and speaker.now["status"] == "PLAY_STATE")
+        check(status == 200 and speaker.keys[keys:] == [key] and came and speaker.plays[plays:] == ["http://example.invalid/two"],
+              "%s presses %s; the speaker cannot skip the stream, so control starts it again (no relay here)" % (direction, key),
+              "keys %s, plays %s" % (speaker.keys[keys:], speaker.plays[plays:]))
+
+    for which, name in (("bluetooth", "BLUETOOTH"), ("aux", "AUX")):
+        status, _ = source(CONTROL_PORT, which)
+        state = live()
+        check(status == 200 and speaker.now["source"] == name and state.get("source") == name
+              and state.get("station_preset") is None and state.get("want_playing") is False,
+              "%s switches the speaker to %s, answering once it is there; control keeps out of its way" % (which, name),
+              "status %d, source %r" % (status, state.get("source")))
+
+    keys = len(speaker.keys)
+    preset(CONTROL_PORT, 2)
+    check(wait_until(lambda: playing("Station Two", 2)) and speaker.keys[keys:] == ["PRESET_2"],
+          "a preset brings the radio back from AUX, as on the remote", "station %r" % live().get("station"))
+
+    keys = len(speaker.keys)
+    statuses = [preset(CONTROL_PORT, 0)[0], preset(CONTROL_PORT, 7)[0], preset(CONTROL_PORT, "1")[0],
+                skip(CONTROL_PORT, "prev")[0], source(CONTROL_PORT, "upnp")[0],
+                send(CONTROL_PORT, "POST", "/api/preset", '{"preset": 1}', "text/plain")[0],
+                fetch(CONTROL_PORT, "/api/preset")[0], fetch(CONTROL_PORT, "/api/skip")[0], fetch(CONTROL_PORT, "/api/source")[0]]
+    check(statuses == [400, 400, 400, 400, 400, 415, 405, 405, 405] and len(speaker.keys) == keys,
+          "a preset outside 1..6, an unknown direction or source, or anything but JSON is refused, pressing nothing",
+          "statuses %s" % statuses)
+
+    speaker.set_refusing(True)
+    status, _ = source(CONTROL_PORT, "aux")
+    speaker.set_refusing(False)
+    check(status == 502 and speaker.now["source"] == "UPNP", "a source the speaker refuses is reported (502)", "status %d" % status)
+
+    power(CONTROL_PORT, False)
+    keys = len(speaker.keys)
+    status, _ = skip(CONTROL_PORT, "next")
+    check(status == 409 and len(speaker.keys) == keys, "skipping while it is off is refused (409), pressing nothing",
+          "status %d" % status)
+
+
 def check_control(speaker, control):
     status, live, _ = get(CONTROL_PORT, "/api/live")
     check(status == 200 and live.get("volume") == 15 and live.get("muted") is False,
@@ -327,6 +489,7 @@ def check_control(speaker, control):
 
     check_setting_volume(speaker)
     check_transport(speaker)
+    check_deck(speaker)
 
     status, page, _ = fetch(CONTROL_PORT, "/")
     check(status == 200 and "/api/live/wait" in page and "setInterval(loadNowPlaying" in page,
@@ -373,6 +536,24 @@ def check_standalone(speaker):
     _, now, _ = get(WEB_PORT, "/api/nowplaying")
     check(status == 200 and now.get("status") == "PAUSE_STATE",
           "standalone pause works, and the next look shows it", "status %d, shown %r" % (status, now.get("status")))
+    check(now.get("station") == "Station Two" and now.get("station_preset") == 2,
+          "standalone /api/nowplaying names the station playing and its preset", "station %r, preset %r"
+          % (now.get("station"), now.get("station_preset")))
+
+    status, _ = source(WEB_PORT, "aux")
+    check(status == 200 and speaker.now["source"] == "AUX", "standalone source switching works, watching the speaker for it",
+          "status %d, source %r" % (status, speaker.now["source"]))
+
+    keys = len(speaker.keys)
+    status, _ = preset(WEB_PORT, 1)
+    check(status == 200 and speaker.keys[keys:] == ["PRESET_1"],
+          "standalone preset presses PRESET_1 (playing it is control's part, wherever control runs)",
+          "status %d, keys %s" % (status, speaker.keys[keys:]))
+
+    keys = len(speaker.keys)
+    status, answer = select(WEB_PORT, 13)
+    check(status == 200 and answer.get("station") == "Station Thirteen" and speaker.keys[keys:] == ["PRESET_1", "PRESET_3"],
+          "standalone /api/select presses the buttons of preset 13", "status %d, keys %s" % (status, speaker.keys[keys:]))
 
 
 def main():
@@ -386,6 +567,8 @@ def main():
     processes = []
 
     try:
+        with open(os.path.join(data_dir, "streams.json"), "w") as out:
+            json.dump(TEST_STREAMS, out, indent=2)
         write_data_dir(data_dir, speaker)
         speaker.start()
 

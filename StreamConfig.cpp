@@ -120,7 +120,7 @@ bool StreamConfig::hasLongerPresetStartingWith (int sequence) const
     return (false);
 }
 
-bool StreamConfig::loadFromFile (const std::string &filename)
+bool StreamConfig::loadFromFile (const std::string &filename, bool quiet)
 {
     std::ifstream ifs (filename);
 
@@ -183,7 +183,10 @@ bool StreamConfig::loadFromFile (const std::string &filename)
             }
         }
 
-        std::cout << "Loaded " << m_streams.size () << " streams from " << filename << "\n";
+        if (!quiet)
+        {
+            std::cout << "Loaded " << m_streams.size () << " streams from " << filename << "\n";
+        }
 
         return (true);
     }

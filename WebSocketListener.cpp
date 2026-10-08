@@ -136,6 +136,32 @@ bool WebSocketListener::parseSkipFailure (const std::string &message, bool &forw
     return (false);
 }
 
+// The speaker's volume report, pushed whenever the level or mute changes:
+//   <updates ...><volumeUpdated><volume><targetvolume>15</targetvolume>
+//   <actualvolume>15</actualvolume><muteenabled>false</muteenabled></volume></volumeUpdated></updates>
+bool WebSocketListener::parseVolume (const std::string &message, int &target, int &actual, bool &muted)
+{
+    pugi::xml_document doc;
+
+    if (!doc.load_string (message.c_str ()))
+    {
+        return (false);
+    }
+
+    const pugi::xml_node volume = doc.select_node ("//volumeUpdated/volume").node ();
+
+    if (!volume)
+    {
+        return (false);
+    }
+
+    target = volume.child ("targetvolume").text ().as_int ();
+    actual = volume.child ("actualvolume").text ().as_int ();
+    muted = (std::strcmp (volume.child_value ("muteenabled"), "true") == 0);
+
+    return (true);
+}
+
 void WebSocketListener::armTimer (int milliseconds)
 {
     if (m_wsi != nullptr)
@@ -292,6 +318,21 @@ void WebSocketListener::handleEvent (const std::string &message)
         if (m_callbacks.skip)
         {
             m_callbacks.skip (forward);
+        }
+
+        return;
+    }
+
+    // Volume: the knob, the app or the remote moved it. Only in-memory state to update.
+    int volTarget = 0;
+    int volActual = 0;
+    bool volMuted = false;
+
+    if (parseVolume (message, volTarget, volActual, volMuted))
+    {
+        if (m_callbacks.volume)
+        {
+            m_callbacks.volume (volTarget, volActual, volMuted);
         }
 
         return;

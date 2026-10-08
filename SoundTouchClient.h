@@ -57,6 +57,36 @@ class SoundTouchClient
         // The same, for a look taken often: gives up after timeoutMs, and does not report failing.
         NowPlaying  glance (long timeoutMs);
 
+        // What /volume says: the level the speaker is moving to, the level it is at now (both 0..100),
+        // and whether it is muted. valid is false when the speaker could not be asked.
+        struct Volume
+        {
+            int  target;
+            int  actual;
+            bool muted;
+            bool valid;
+
+            Volume ()
+                : target (0),
+                  actual (0),
+                  muted (false),
+                  valid (false)
+            {
+            }
+        };
+
+        // Reads /volume; gives up after timeoutMs, and below the default stays quiet about failing,
+        // like glance, so the dashboard's frequent polls do not fill the log.
+        Volume      volume (long timeoutMs = 10000);
+
+        // Sets the volume, 0 to 100, giving up after timeoutMs. The speaker then reports the new level
+        // on its event stream, as it does for the knob or the remote.
+        bool        setVolume (int level, long timeoutMs = 10000);
+
+        // Presses and releases a key of the remote, by its Web API name (PLAY, PAUSE, POWER, ...), as
+        // the press and release POSTs to /key the API asks for; each may take timeoutMs.
+        bool        pressKey (const std::string &key, long timeoutMs = 10000);
+
     private :
 
         bool        pressButton (int button);
@@ -77,7 +107,7 @@ class SoundTouchClient
 
         bool upnpRequest (const std::string &soapAction, const std::string &body, std::string &response);
         bool restGet (const std::string &endpoint, std::string &response, long timeoutMs = 10000, bool quiet = false);
-        bool restPost (const std::string &endpoint, const std::string &body, std::string &response);
+        bool restPost (const std::string &endpoint, const std::string &body, std::string &response, long timeoutMs = 10000);
 
         // Now the data members
 

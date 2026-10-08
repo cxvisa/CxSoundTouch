@@ -264,7 +264,8 @@ bool SoundTouchClient::restGet (const std::string &endpoint, std::string &respon
 bool SoundTouchClient::restPost (
     const std::string &endpoint,
     const std::string &body,
-    std::string &response
+    std::string &response,
+    long timeoutMs
 )
 {
     CURL *curl = curl_easy_init ();
@@ -287,7 +288,7 @@ bool SoundTouchClient::restPost (
     curl_easy_setopt (curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt (curl, CURLOPT_WRITEFUNCTION, curlWriteCallback);
     curl_easy_setopt (curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt (curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt (curl, CURLOPT_TIMEOUT_MS, timeoutMs);
 
     const CURLcode res = curl_easy_perform (curl);
 
@@ -479,6 +480,58 @@ SoundTouchClient::NowPlaying SoundTouchClient::glance (long timeoutMs)
     now.location = nowPlaying.child ("ContentItem").attribute ("location").value ();
 
     return (now);
+}
+
+SoundTouchClient::Volume SoundTouchClient::volume (long timeoutMs)
+{
+    Volume vol;
+    std::string response;
+    pugi::xml_document doc;
+
+    if (!restGet ("/volume", response, timeoutMs, timeoutMs < 10000) || !doc.load_string (response.c_str ()))
+    {
+        return (vol);
+    }
+
+    const pugi::xml_node node = doc.child ("volume");
+
+    if (!node)
+    {
+        return (vol);
+    }
+
+    vol.target = node.child ("targetvolume").text ().as_int ();
+    vol.actual = node.child ("actualvolume").text ().as_int ();
+    vol.muted = (std::strcmp (node.child_value ("muteenabled"), "true") == 0);
+    vol.valid = true;
+
+    return (vol);
+}
+
+bool SoundTouchClient::setVolume (int level, long timeoutMs)
+{
+    std::string response;
+
+    // The speaker answers <status>/volume</status>, or <errors> when it refuses.
+    return (restPost ("/volume", "<volume>" + std::to_string (level) + "</volume>", response, timeoutMs)
+            && response.find ("<errors") == std::string::npos);
+}
+
+bool SoundTouchClient::pressKey (const std::string &key, long timeoutMs)
+{
+    for (const char *state : { "press", "release" })
+    {
+        std::string response;
+        const std::string body = std::string ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<key state=\"") + state
+                                 + "\" sender=\"Gabbo\">" + key + "</key>";
+
+        if (!restPost ("/key", body, response, timeoutMs) || response.find ("<errors") != std::string::npos)
+        {
+            return (false);
+        }
+    }
+
+    return (true);
 }
 
 bool SoundTouchClient::stop ()

@@ -18,8 +18,6 @@ WebSocketListener::WebSocketListener (const std::string &deviceIp, const Callbac
       m_invalidSeenSincePress (false),
       m_running (false),
       m_stopRequested (false),
-      m_playRequest (0),
-      m_playReason (static_cast<int> (PlayReason::PRESS)),
       m_lastPressTime (),
       m_playBusy (false),
       m_reconnectTimer (),
@@ -188,13 +186,20 @@ void WebSocketListener::startPlayback (int presetId)
     requestPlay (presetId, PlayReason::PRESS);
 }
 
-void WebSocketListener::requestPlay (int presetId, PlayReason reason)
+void WebSocketListener::requestPlay (int presetId, PlayReason reason, const std::string &streamName)
 {
-    m_playReason = static_cast<int> (reason);
-    m_playRequest = presetId;
+    {
+        std::lock_guard<std::mutex> lock (m_playMutex);
+
+        m_playRequest.pending = true;
+        m_playRequest.presetId = presetId;
+        m_playRequest.reason = reason;
+        m_playRequest.streamName = streamName;
+    }
 
     // lws_service() keeps sleeping after firing a callback, so the loop would not notice this
-    // request until some unrelated event arrived. Break the wait explicitly.
+    // request until some unrelated event arrived. Break the wait explicitly; this is the one lws
+    // call made for calling from any thread.
     lws_cancel_service (m_context);
 }
 
@@ -283,9 +288,11 @@ void WebSocketListener::onButtonPressed (int button)
     // with it. Once nothing can extend it, the sequence is final.
     if (m_callbacks.couldExtend && m_callbacks.couldExtend (m_sequence))
     {
-        armTimer (m_comboWindowMs);
+        const int window = m_comboWindowMs;
 
-        Say () << ">>> Waiting " << m_comboWindowMs << "ms for another digit...\n";
+        armTimer (window);
+
+        Say () << ">>> Waiting " << window << "ms for another digit...\n";
 
         return;
     }
@@ -617,14 +624,20 @@ void WebSocketListener::run ()
     {
         lws_service (m_context, 0);
 
-        // While a playback is in flight, leave m_playRequest set so it is picked up when that
+        // While a playback is in flight, leave the request waiting so it is picked up when that
         // finishes. A newer press simply overwrites it, so the last button pressed wins.
         if (!m_playBusy)
         {
-            const int presetToPlay = m_playRequest.exchange (0);
-            const PlayReason reason = static_cast<PlayReason> (m_playReason.load ());
+            PlayRequest request;
 
-            if (presetToPlay != 0 && m_callbacks.play)
+            {
+                std::lock_guard<std::mutex> lock (m_playMutex);
+
+                request = m_playRequest;
+                m_playRequest.pending = false;
+            }
+
+            if (request.pending && m_callbacks.play)
             {
                 if (m_playThread.joinable ())
                 {
@@ -634,12 +647,20 @@ void WebSocketListener::run ()
                 m_playBusy = true;
 
                 // Runs off the service loop so the HTTP calls do not stall the WebSocket.
-                m_playThread = std::thread ([this, presetToPlay, reason] ()
+                m_playThread = std::thread ([this, request] ()
                 {
                     // A resume that finds nothing to do reports why itself.
-                    if (!m_callbacks.play (presetToPlay, reason) && reason == PlayReason::PRESS)
+                    if (!m_callbacks.play (request.presetId, request.reason, request.streamName)
+                        && request.reason == PlayReason::PRESS)
                     {
-                        Say (std::cerr) << ">>> Failed to start preset " << presetToPlay << "\n";
+                        if (request.streamName.empty ())
+                        {
+                            Say (std::cerr) << ">>> Failed to start preset " << request.presetId << "\n";
+                        }
+                        else
+                        {
+                            Say (std::cerr) << ">>> Failed to start " << request.streamName << "\n";
+                        }
                     }
 
                     m_playBusy = false;

@@ -202,3 +202,59 @@ std::string HttpUtil::mediaType (const std::string &contentType)
 {
     return (lowerCased (trimmed (contentType.substr (0, contentType.find (';')))));
 }
+
+std::string HttpUtil::entityTag (const std::string &bytes)
+{
+    // 64-bit FNV-1a: quick, and plenty to tell one version of a small file from another.
+    std::uint64_t hash = 0xcbf29ce484222325ULL;
+
+    for (const char c : bytes)
+    {
+        hash ^= static_cast<unsigned char> (c);
+        hash *= 0x100000001b3ULL;
+    }
+
+    static const char digits[] = "0123456789abcdef";
+    std::string tag = "\"";
+
+    for (int shift = 60; shift >= 0; shift -= 4)
+    {
+        tag += digits[(hash >> shift) & 0xF];
+    }
+
+    tag += "-" + std::to_string (bytes.size ()) + "\"";
+
+    return (tag);
+}
+
+bool HttpUtil::ifMatches (const std::string &ifMatch, const std::string &tag)
+{
+    const std::string wanted = trimmed (ifMatch);
+
+    if (wanted == "*")
+    {
+        return (true);
+    }
+
+    size_t start = 0;
+
+    while (start <= wanted.size ())
+    {
+        const size_t comma = wanted.find (',', start);
+        const std::string one = trimmed (wanted.substr (start, (comma == std::string::npos) ? std::string::npos : comma - start));
+
+        if (!one.empty () && one == tag)
+        {
+            return (true);
+        }
+
+        if (comma == std::string::npos)
+        {
+            break;
+        }
+
+        start = comma + 1;
+    }
+
+    return (false);
+}

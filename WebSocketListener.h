@@ -4,6 +4,7 @@
 #include <string>
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <thread>
 #include <chrono>
 #include <libwebsockets.h>
@@ -25,8 +26,8 @@ class WebSocketListener
         // Asked with this, a look at the speaker has no preset to bring back.
         static constexpr int NO_PRESET = -1;
 
-        // Plays the stream mapped to a preset.
-        using PlayCallback = std::function<bool(int, PlayReason)>;
+        // Plays the stream mapped to a preset, or, given a stream's name, that stream.
+        using PlayCallback = std::function<bool(int, PlayReason, const std::string &)>;
 
         // Fills in the stream name for a preset; false when the preset has no stream configured.
         using PresetInfoCallback = std::function<bool(int, std::string &)>;
@@ -73,9 +74,13 @@ class WebSocketListener
         WebSocketListener (const std::string &deviceIp, const Callbacks &callbacks, int comboWindowMs);
         ~WebSocketListener ();
 
-        // Asks for a play other than from a button, as a press would, or with RESYNC only a look.
-        // Only from the listener's own thread, that is from one of its callbacks.
-        void requestPlay (int presetId, PlayReason reason);
+        // Asks for a play other than from a button, as a press would, or with RESYNC only a look; given
+        // streamName, a press for that stream rather than for a preset. The latest request wins over
+        // any not yet taken up. Safe from any thread.
+        void requestPlay (int presetId, PlayReason reason, const std::string &streamName = std::string ());
+
+        // How long to wait for another digit of a combo, from the next press on. Safe from any thread.
+        void setComboWindowMs (int comboWindowMs) { m_comboWindowMs = comboWindowMs; }
 
         bool connect ();
         void run ();
@@ -130,12 +135,21 @@ class WebSocketListener
             WebSocketListener      *self;
         };
 
+        // A play asked for and not yet taken up by the loop.
+        struct PlayRequest
+        {
+            bool        pending = false;
+            int         presetId = 0;
+            PlayReason  reason = PlayReason::PRESS;
+            std::string streamName;
+        };
+
         // Now the data members
 
         std::string             m_deviceIp;
         std::string             m_wsUrl;
         Callbacks               m_callbacks;
-        int                     m_comboWindowMs;
+        std::atomic<int>        m_comboWindowMs;
         struct lws_context     *m_context;
         struct lws             *m_wsi;
         State                   m_state;
@@ -144,8 +158,8 @@ class WebSocketListener
         bool                    m_invalidSeenSincePress;
         std::atomic<bool>       m_running;
         std::atomic<bool>       m_stopRequested;
-        std::atomic<int>        m_playRequest;
-        std::atomic<int>        m_playReason;       // a PlayReason
+        std::mutex              m_playMutex;        // m_playRequest
+        PlayRequest             m_playRequest;
         std::chrono::steady_clock::time_point m_lastPressTime;
         std::atomic<bool>       m_playBusy;
         std::thread             m_playThread;

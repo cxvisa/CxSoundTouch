@@ -14,13 +14,17 @@ It runs the built ./cxstcc against a fake SoundTouch on 127.0.0.2, from a throwa
                  then 3 is the combo for 13, and 1, 1, 1 the three-digit combo for 111, while 1, 1
                  waits out the combo window first), /api/skip presses NEXT_TRACK or PREV_TRACK
                  (control starts its stream again), and /api/source switches to Bluetooth or AUX;
-                 stopping does not sit out a hold
+                 POST /api/play plays a stream by its name, on a preset or not, as a press for it would,
+                 and remembers it by name; PUT /api/streams saves an edited list, refused without
+                 If-Match, against a changed file, or breaking the rules, keeping combo_window_ms and a
+                 .bak, and control uses it at once; stopping does not sit out a hold
   web            (standalone) has no /api/live/wait, so the page polls; /api/nowplaying still
                  carries the volume, read from the speaker, and the station's preset; the volume,
-                 play/pause, power, presets and sources work there too
+                 play/pause, power, presets and sources work there too; /api/play hands a stream on no
+                 preset to the speaker itself and presses a preset's buttons; saving works there too
 
-It plays its own stations (presets 1, 2, 11, 13 and 111, on addresses nothing fetches), so it does
-not depend on streams.json.
+It plays its own stations (presets 1, 2, 11, 13 and 111, and one on no preset, on addresses nothing
+fetches), so it does not depend on streams.json.
 
 Run: make e2e (or python3 test/web_live_check.py). Exits non-zero if any check fails. To run it beside
 a fake already up by hand, move it with E2E_CONTROL_PORT, E2E_WEB_PORT (default 8094 and 8095) and
@@ -41,20 +45,25 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fake_speaker import REPO, FakeSpeaker, write_data_dir  # noqa: E402
+from fake_speaker import FAKE_DEVICE_ID, REPO, FakeSpeaker, write_data_dir  # noqa: E402
 
 BINARY = os.path.join(REPO, "cxstcc")
 CONTROL_PORT = int(os.environ.get("E2E_CONTROL_PORT", "8094"))
 WEB_PORT = int(os.environ.get("E2E_WEB_PORT", "8095"))
 SPEAKER_HOST = os.environ.get("E2E_SPEAKER_HOST", "127.0.0.2")
+KITCHEN_HOST = os.environ.get("E2E_KITCHEN_HOST", "127.0.0.3")     # a second speaker, for the Speakers page
+KITCHEN_ID = "KITCHEN0"
+FIRST_RUN_PORT = int(os.environ.get("E2E_FIRST_RUN_PORT", "8097"))
+SSDP_PORT = int(os.environ.get("E2E_SSDP_PORT", "19001"))   # where the fakes answer a search for speakers
+ONLINE_WINDOW = 10.0    # WebServer::ONLINE_WINDOW
 HOLD = 3.0          # WebServer::LIVE_HOLD
 PLAYBACK_SETTLE = 5.0   # WebServer::PLAYBACK_SETTLE
 PROMPT = 0.5        # a generous bound for "at once"; in practice a few milliseconds
 ELSEWHERE = "http://example.invalid/radio"      # a stream that is not control's, so control lets it be
 
 # The stations the check plays, on presets 1, 2, 11, 13 and 111 (so 1 and 11 wait for another digit,
-# and 1 then 3, or 1, 1, 1, are combos), on addresses nothing fetches: the fake speaker only reports
-# playing them. The combo window is control's default, 700 ms.
+# and 1 then 3, or 1, 1, 1, are combos), and one on no preset, on addresses nothing fetches: the fake
+# speaker only reports playing them. The combo window is control's default, 700 ms.
 TEST_STREAMS = {
     "combo_window_ms": 700,
     "streams": [
@@ -63,6 +72,7 @@ TEST_STREAMS = {
         {"name": "eleven", "display_name": "Station Eleven", "url": "http://example.invalid/eleven", "preset": 11},
         {"name": "thirteen", "display_name": "Station Thirteen", "url": "http://example.invalid/thirteen", "preset": 13},
         {"name": "one-eleven", "display_name": "Station 111", "url": "http://example.invalid/one-eleven", "preset": 111},
+        {"name": "free", "display_name": "Station Free", "url": "http://example.invalid/free"},
     ],
 }
 COMBO_WINDOW = TEST_STREAMS["combo_window_ms"] / 1000.0
@@ -118,6 +128,36 @@ def set_volume(port, level):
     return send(port, "POST", "/api/volume", json.dumps({"volume": level}), "application/json")
 
 
+def discover(port):
+    """Keeps the search for speakers going, as the open Speakers page does; the answer's speakers."""
+    return send(port, "POST", "/api/speakers/discover", "{}", "application/json")
+
+
+def make_default(port, device_id):
+    return send(port, "PUT", "/api/speakers/default", json.dumps({"id": device_id}), "application/json")
+
+
+def speaker_entry(answer, device_id):
+    return next((item for item in answer.get("speakers", []) if item.get("id") == device_id), {})
+
+
+def wait_found(port, condition, timeout=15.0):
+    """Searches, as the open page does every 2 s, until condition holds for the answer; the last answer."""
+    deadline = time.monotonic() + timeout
+    answer = {}
+    while time.monotonic() < deadline:
+        answer = discover(port)[1]
+        if condition(answer):
+            return answer
+        time.sleep(1.0)
+    return answer
+
+
+def both_online(answer):
+    return (speaker_entry(answer, FAKE_DEVICE_ID).get("online") is True
+            and speaker_entry(answer, KITCHEN_ID).get("online") is True)
+
+
 def playback(port, action):
     return send(port, "POST", "/api/playback", json.dumps({"action": action}), "application/json")
 
@@ -140,6 +180,37 @@ def source(port, which):
 
 def select(port, number):
     return send(port, "POST", "/api/select", json.dumps({"preset": number}), "application/json")
+
+
+def play_stream(port, name):
+    return send(port, "POST", "/api/play", json.dumps({"stream": name}), "application/json")
+
+
+def streams_with_tag(port):
+    """The stream list and the ETag it came with."""
+    with urllib.request.urlopen("http://127.0.0.1:%d/api/streams" % port, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8")), response.headers.get("ETag")
+
+
+def put_streams(port, streams, tag, content_type="application/json", raw=None):
+    """The status, the JSON answer and the ETag of a PUT of this stream list, sent with tag as If-Match
+    (none when tag is None); raw, when given, is sent instead."""
+    body = raw if raw is not None else json.dumps({"streams": streams})
+    request = urllib.request.Request("http://127.0.0.1:%d/api/streams" % port, method="PUT", data=body.encode("utf-8"))
+    if content_type is not None:
+        request.add_header("Content-Type", content_type)
+    if tag is not None:
+        request.add_header("If-Match", tag)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            status, answer, headers = response.status, response.read(), response.headers
+    except urllib.error.HTTPError as error:
+        status, answer, headers = error.code, error.read(), error.headers
+    try:
+        data = json.loads(answer.decode("utf-8"))
+    except ValueError:
+        data = {}
+    return status, data if isinstance(data, dict) else {}, headers.get("ETag")
 
 
 def wait_until(condition, timeout=8.0):
@@ -172,9 +243,11 @@ class Waiter(threading.Thread):
 
 
 def launch(arguments, port, log_path):
-    """Starts cxstcc and waits for its dashboard to answer."""
+    """Starts cxstcc and waits for its dashboard to answer. Its searches for speakers go to the fakes."""
     log = open(log_path, "w")
-    process = subprocess.Popen([BINARY] + arguments, stdout=log, stderr=subprocess.STDOUT)
+    env = dict(os.environ, CXSTCC_SSDP_TARGETS=",".join("%s:%d" % (host, SSDP_PORT)
+                                                        for host in (SPEAKER_HOST, KITCHEN_HOST)))
+    process = subprocess.Popen([BINARY] + arguments, stdout=log, stderr=subprocess.STDOUT, env=env)
     log.close()
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline and process.poll() is None:
@@ -432,7 +505,255 @@ def check_deck(speaker):
           "status %d" % status)
 
 
-def check_control(speaker, control):
+def check_streams(speaker, data_dir):
+    """Playing streams by name, and saving an edited stream list, which control uses at once."""
+    def live():
+        return get(CONTROL_PORT, "/api/live")[1]
+
+    def on(name):
+        state = live()
+        return state.get("station_name") == name and state.get("source") == "UPNP" and state.get("status") == "PLAY_STATE"
+
+    def file_bytes(name="streams.json"):
+        with open(os.path.join(data_dir, name), "rb") as data:
+            return data.read()
+
+    listing, tag = streams_with_tag(CONTROL_PORT)
+    check(len(listing) == len(TEST_STREAMS["streams"]) and (tag or "").startswith('"'),
+          "/api/streams comes with an ETag, the version of streams.json it was read from", "ETag %s" % tag)
+
+    # In standby, as check_deck leaves it.
+    keys, plays = len(speaker.keys), len(speaker.plays)
+    status, answer = play_stream(CONTROL_PORT, "free")
+    state = live()
+    check(status == 200 and answer.get("station") == "Station Free" and speaker.plays[plays:] == ["http://example.invalid/free"]
+          and len(speaker.keys) == keys and on("free") and state.get("station") == "Station Free"
+          and state.get("station_preset") is None,
+          "/api/play plays a stream that is on no preset, from standby too, answering once it plays; no key is pressed",
+          "status %d, plays %s, station %r" % (status, speaker.plays[plays:], state.get("station")))
+
+    # Noted once the play is done with, a moment after the speaker reports playing.
+    noted = wait_until(lambda: live().get("last_stream") == "free", timeout=3)
+    with open(os.path.join(data_dir, "state.json")) as saved:
+        remembered = json.load(saved)
+    check(noted and remembered == {"last_preset": 0, "last_stream": "free"}
+          and get(CONTROL_PORT, "/api/state")[1].get("station") == "Station Free",
+          "what played is remembered by its name, to be brought back, preset or not", "state.json %r" % remembered)
+
+    keys, plays = len(speaker.keys), len(speaker.plays)
+    started = time.monotonic()
+    status, _ = play_stream(CONTROL_PORT, "thirteen")
+    taken = time.monotonic() - started
+    check(status == 200 and on("thirteen") and live().get("station_preset") == 13 and len(speaker.keys) == keys
+          and speaker.plays[plays:] == ["http://example.invalid/thirteen"] and taken < COMBO_WINDOW,
+          "/api/play plays a preset's stream by name too, straight away: no buttons, no combo window",
+          "%.2f s, keys %s" % (taken, speaker.keys[keys:]))
+
+    keys, plays = len(speaker.keys), len(speaker.plays)
+    statuses = [play_stream(CONTROL_PORT, "nowhere")[0], play_stream(CONTROL_PORT, "two words")[0],
+                send(CONTROL_PORT, "POST", "/api/play", '{"stream": "free"}', "text/plain")[0],
+                send(CONTROL_PORT, "POST", "/api/play", "{}", "application/json")[0], fetch(CONTROL_PORT, "/api/play")[0]]
+    check(statuses == [404, 400, 415, 400, 405] and len(speaker.keys) == keys and len(speaker.plays) == plays,
+          "/api/play refuses a name no stream has (404), one no stream could have, or anything but JSON, playing nothing",
+          "statuses %s" % statuses)
+
+    # Saves that are refused leave the file, and its ETag, as they were.
+    before = file_bytes()
+    original = [dict(item) for item in listing]
+    bad = [dict(original[0], preset=7), dict(original[1], name="one"), dict(original[2], url="ftp://example.invalid/x")]
+    too_large = '{"streams": [%s]}' % ",".join('{"name": "s%d", "url": "http://example.invalid/%s"}' % (i, "x" * 300)
+                                              for i in range(250))
+    refused = [put_streams(CONTROL_PORT, original, None), put_streams(CONTROL_PORT, original, '"0000000000000000-1"'),
+               put_streams(CONTROL_PORT, original, tag, content_type="text/plain"), put_streams(CONTROL_PORT, bad, tag),
+               put_streams(CONTROL_PORT, None, tag, raw=too_large)]
+    statuses = [status for status, _, _ in refused]
+    problems = sorted((problem.get("index"), problem.get("field")) for problem in refused[3][1].get("problems", []))
+    check(statuses == [428, 412, 415, 400, 413] and refused[1][2] == tag and file_bytes() == before
+          and streams_with_tag(CONTROL_PORT)[1] == tag,
+          "a save is refused without If-Match (428), against a list changed since (412, with the ETag now), as anything but "
+          "JSON (415), breaking the rules (400) or too large (413); nothing is written", "statuses %s" % statuses)
+    check(problems == [(0, "name"), (0, "preset"), (1, "name"), (2, "url")],
+          "a refused list says what is wrong with which stream: a preset not made of buttons, a name used twice, a URL "
+          "that is not http", "problems %s" % problems)
+
+    # A save while "free" plays: preset 2 moves from "two" to "free", "eleven" is renamed, "thirteen" goes and
+    # "added" comes, its display name left for the server to fill in.
+    play_stream(CONTROL_PORT, "free")
+    edited = [dict(item) for item in original if item["name"] != "thirteen"]
+    for item in edited:
+        if item["name"] == "two":
+            item["preset"] = None
+        if item["name"] == "free":
+            item["preset"] = 2
+        if item["name"] == "eleven":
+            item["display_name"] = "Station 11"
+    edited.append({"name": "added", "display_name": "", "description": "", "url": " http://example.invalid/added ", "preset": None})
+    status, answer, new_tag = put_streams(CONTROL_PORT, edited, tag)
+    saved, listed_tag = streams_with_tag(CONTROL_PORT)
+    on_disk = json.loads(file_bytes())
+    check(status == 200 and answer.get("changed") is True and answer.get("applied") is True and new_tag == listed_tag
+          and new_tag != tag and answer.get("streams") == saved and list(on_disk) == ["combo_window_ms", "streams"]
+          and on_disk["combo_window_ms"] == 700
+          and [item["name"] for item in on_disk["streams"]] == ["one", "two", "eleven", "one-eleven", "free", "added"]
+          and on_disk["streams"][-1] == {"name": "added", "display_name": "added", "url": "http://example.invalid/added"}
+          and file_bytes("streams.json.bak") == before,
+          "PUT /api/streams saves the whole list, keeping combo_window_ms, and the file it replaced as streams.json.bak",
+          "status %d, streams %s" % (status, [item["name"] for item in on_disk.get("streams", [])]))
+
+    state = live()
+    check(on("free") and state.get("station_preset") == 2,
+          "the stream playing shows its new preset at once, without being played again", "preset %r" % state.get("station_preset"))
+
+    keys, plays = len(speaker.keys), len(speaker.plays)
+    preset(CONTROL_PORT, 2)
+    came = wait_until(lambda: len(speaker.plays) > plays and on("free"))
+    check(came and speaker.keys[keys:] == ["PRESET_2"] and speaker.plays[plays:] == ["http://example.invalid/free"],
+          "control uses the saved list at once: preset 2 plays the stream moved onto it", "plays %s" % speaker.plays[plays:])
+
+    status, _ = play_stream(CONTROL_PORT, "added")
+    check(status == 200 and on("added") and live().get("station") == "added",
+          "a stream added by the save plays at once", "status %d, station %r" % (status, live().get("station")))
+
+    keys = len(speaker.keys)
+    status, _ = select(CONTROL_PORT, 13)
+    check(status == 404 and len(speaker.keys) == keys, "a preset the save took away has nothing on it", "status %d" % status)
+
+    status, answer, same_tag = put_streams(CONTROL_PORT, saved, new_tag)
+    check(status == 200 and answer.get("changed") is False and same_tag == new_tag and file_bytes("streams.json.bak") == before,
+          "saving the list as it is writes nothing", "status %d, changed %r" % (status, answer.get("changed")))
+
+    # Back to the check's own stations, and to Station Two in standby, as the standalone checks expect.
+    status, _, _ = put_streams(CONTROL_PORT, TEST_STREAMS["streams"], same_tag)
+    play_stream(CONTROL_PORT, "two")
+    power(CONTROL_PORT, False)
+    check(status == 200 and [item["name"] for item in streams_with_tag(CONTROL_PORT)[0]]
+          == [item["name"] for item in TEST_STREAMS["streams"]] and speaker.now["source"] == "STANDBY",
+          "the original list saves back", "status %d" % status)
+
+
+def check_speakers_control():
+    status, answer, _ = get(CONTROL_PORT, "/api/speakers")
+    mine = speaker_entry(answer, FAKE_DEVICE_ID)
+    check(status == 200 and answer.get("embedded") is True and answer.get("active_ip") == SPEAKER_HOST
+          and answer.get("default_id") == FAKE_DEVICE_ID and mine.get("default") is True and mine.get("active") is True
+          and mine.get("online") is None and answer.get("discovery", {}).get("active") is False
+          and answer.get("groups") == [],
+          "control's /api/speakers names the speaker it drives, and nothing is searched for until asked",
+          "status %d, %s" % (status, answer))
+
+    answer = wait_found(CONTROL_PORT, both_online)
+    kitchen = speaker_entry(answer, KITCHEN_ID)
+    check(both_online(answer) and kitchen.get("saved") is False and kitchen.get("name") == "Kitchen"
+          and kitchen.get("type") == "SoundTouch 30" and answer.get("discovery", {}).get("active") is True,
+          "searching finds both speakers, the new one with its name and model from the speaker itself",
+          "%s" % answer.get("speakers"))
+
+    status, answer = make_default(CONTROL_PORT, KITCHEN_ID)
+    check(status == 200 and answer.get("changed") is True and answer.get("restart_needed") is True
+          and answer.get("default_id") == KITCHEN_ID,
+          "inside control, a new default is saved and taken up when control next starts",
+          "status %d, restart_needed %r" % (status, answer.get("restart_needed")))
+    status, answer = make_default(CONTROL_PORT, FAKE_DEVICE_ID)
+    check(status == 200 and answer.get("restart_needed") is False,
+          "choosing the speaker control drives again needs no restart", "status %d" % status)
+
+
+def check_speakers_standalone(speaker, kitchen, data_dir):
+    status, page, _ = fetch(WEB_PORT, "/speakers")
+    check(status == 200 and "/api/speakers/discover" in page and 'href="/"' in page and "Make default" in page,
+          "/speakers serves the Speakers page, which searches while open and links back to the dashboard",
+          "status %d" % status)
+    status, page, _ = fetch(WEB_PORT, "/")
+    check(status == 200 and 'href="/speakers"' in page and 'id="first-run"' in page,
+          "the dashboard links to the Speakers page", "status %d" % status)
+
+    status, answer, _ = get(WEB_PORT, "/api/speakers")
+    check(status == 200 and answer.get("embedded") is False and answer.get("active_ip") == ""
+          and answer.get("default_id") == FAKE_DEVICE_ID and speaker_entry(answer, KITCHEN_ID).get("saved") is True,
+          "standalone /api/speakers lists the saved speakers and drives none of them itself",
+          "status %d" % status)
+
+    status, _ = send(WEB_PORT, "POST", "/api/speakers/discover", "{}", "text/plain")
+    check(status == 415, "a search asked for without JSON is refused", "status %d" % status)
+    status, _, _ = fetch(WEB_PORT, "/api/speakers/discover")
+    check(status == 405, "a search is asked for with POST only", "status %d" % status)
+
+    answer = wait_found(WEB_PORT, both_online)
+    check(both_online(answer), "standalone searching finds both speakers", "%s" % answer.get("speakers"))
+
+    devices_path = os.path.join(data_dir, "devices.json")
+    with open(devices_path) as existing:
+        devices = json.load(existing)
+    devices["groups"] = [{"name": "Downstairs", "members": [FAKE_DEVICE_ID, KITCHEN_ID]}]
+    with open(devices_path, "w") as out:
+        json.dump(devices, out, indent=2)
+
+    status, answer = make_default(WEB_PORT, KITCHEN_ID)
+    with open(devices_path) as saved:
+        devices = json.load(saved)
+    check(status == 200 and answer.get("restart_needed") is False and devices.get("default_device") == KITCHEN_ID
+          and devices.get("groups", [{}])[0].get("name") == "Downstairs",
+          "standalone saves a new default, keeping what else devices.json holds",
+          "status %d, %s" % (status, devices))
+
+    before = speaker.volume
+    status, _ = set_volume(WEB_PORT, 27)
+    check(status == 200 and kitchen.volume == 27 and speaker.volume == before,
+          "standalone takes the new default up at once: the volume goes to the kitchen",
+          "kitchen %d, first %d" % (kitchen.volume, speaker.volume))
+
+    status, answer = make_default(WEB_PORT, "NOSUCHSPEAKER")
+    check(status == 404, "a default that is no speaker known is refused", "status %d" % status)
+    status, _ = send(WEB_PORT, "PUT", "/api/speakers/default", "{}", "application/json")
+    check(status == 400, "a default with no id is refused", "status %d" % status)
+    status, _ = send(WEB_PORT, "PUT", "/api/speakers/default", json.dumps({"id": KITCHEN_ID}), "text/plain")
+    check(status == 415, "a default given without JSON is refused", "status %d" % status)
+    status, _ = make_default(WEB_PORT, FAKE_DEVICE_ID)
+    check(status == 200, "and the first speaker can be the default again", "status %d" % status)
+
+    kitchen.set_announcing(False)
+    answer = wait_found(WEB_PORT, lambda found: speaker_entry(found, KITCHEN_ID).get("online") is False,
+                        ONLINE_WINDOW + 8)
+    gone = speaker_entry(answer, KITCHEN_ID)
+    check(gone.get("online") is False and (gone.get("last_seen_ms") or 0) >= ONLINE_WINDOW * 1000
+          and speaker_entry(answer, FAKE_DEVICE_ID).get("online") is True,
+          "a speaker that stops answering is shown offline, with when it was last seen", "%s" % gone)
+    kitchen.set_announcing(True)
+
+    stopped = wait_until(lambda: get(WEB_PORT, "/api/speakers")[1].get("discovery", {}).get("active") is False, 20)
+    check(stopped, "the search stops by itself once the page stops asking for it")
+
+
+def check_first_run(data_dir, processes):
+    """A dashboard with no speaker saved: it says so, and choosing one creates devices.json."""
+    empty = os.path.join(data_dir, "first-run")
+    os.makedirs(empty)
+    web = launch(["--data-dir", empty, "web", "--web-port", str(FIRST_RUN_PORT), "--web-bind", "127.0.0.1"],
+                 FIRST_RUN_PORT, os.path.join(data_dir, "first-run.log"))
+    processes.append(web)
+
+    status, answer, _ = get(FIRST_RUN_PORT, "/api/speakers")
+    check(status == 200 and answer.get("has_default") is False and answer.get("speakers") == [],
+          "with no speaker saved, /api/speakers says there is no default, for the dashboard to offer a search",
+          "status %d, %s" % (status, answer))
+
+    answer = wait_found(FIRST_RUN_PORT, both_online)
+    status, answer = make_default(FIRST_RUN_PORT, KITCHEN_ID)
+    devices_path = os.path.join(empty, "devices.json")
+    devices = {}
+    if os.path.exists(devices_path):
+        with open(devices_path) as saved:
+            devices = json.load(saved)
+    check(status == 200 and answer.get("has_default") is True and devices.get("default_device") == KITCHEN_ID
+          and devices.get("devices", [{}])[0].get("ip_address") == KITCHEN_HOST,
+          "choosing a speaker found creates devices.json with it as the default",
+          "status %d, %s" % (status, devices))
+
+    web.terminate()
+    web.wait(10)
+
+
+def check_control(speaker, control, data_dir):
     status, live, _ = get(CONTROL_PORT, "/api/live")
     check(status == 200 and live.get("volume") == 15 and live.get("muted") is False,
           "control reads the speaker's volume at start", "volume %r" % live.get("volume"))
@@ -490,10 +811,14 @@ def check_control(speaker, control):
     check_setting_volume(speaker)
     check_transport(speaker)
     check_deck(speaker)
+    check_streams(speaker, data_dir)
+    check_speakers_control()
 
     status, page, _ = fetch(CONTROL_PORT, "/")
     check(status == 200 and "/api/live/wait" in page and "setInterval(loadNowPlaying" in page,
           "the dashboard follows /api/live/wait, and polls only where it is absent")
+    check('id="st-edit"' in page and '"/api/play"' in page and 'method: "PUT"' in page,
+          "the dashboard has a play button for each stream, and an editor that saves the list")
 
     seq = get(CONTROL_PORT, "/api/live/wait")[1].get("seq", 0)
     waiter = wait_held(CONTROL_PORT, seq)
@@ -510,7 +835,7 @@ def check_control(speaker, control):
           "%.2f s, exit %r" % (taken, code))
 
 
-def check_standalone(speaker):
+def check_standalone(speaker, kitchen, data_dir):
     status, _, _ = get(WEB_PORT, "/api/live/wait")
     check(status == 404, "the standalone web command has no /api/live/wait, so the page polls",
           "status %d" % status)
@@ -555,15 +880,41 @@ def check_standalone(speaker):
     check(status == 200 and answer.get("station") == "Station Thirteen" and speaker.keys[keys:] == ["PRESET_1", "PRESET_3"],
           "standalone /api/select presses the buttons of preset 13", "status %d, keys %s" % (status, speaker.keys[keys:]))
 
+    keys, plays = len(speaker.keys), len(speaker.plays)
+    status, _ = play_stream(WEB_PORT, "free")
+    _, now, _ = get(WEB_PORT, "/api/nowplaying")
+    check(status == 200 and speaker.plays[plays:] == ["http://example.invalid/free"] and len(speaker.keys) == keys
+          and now.get("station_name") == "free" and now.get("station") == "Station Free",
+          "standalone /api/play hands a stream on no preset to the speaker itself, as `cxstcc play` does",
+          "status %d, plays %s" % (status, speaker.plays[plays:]))
+
+    keys = len(speaker.keys)
+    status, answer = play_stream(WEB_PORT, "thirteen")
+    check(status == 200 and answer.get("preset") == 13 and speaker.keys[keys:] == ["PRESET_1", "PRESET_3"],
+          "standalone /api/play of a preset's stream presses its buttons, for control to play wherever it runs",
+          "status %d, keys %s" % (status, speaker.keys[keys:]))
+
+    listing, tag = streams_with_tag(WEB_PORT)
+    listing[0]["description"] = "Saved standalone"
+    status, answer, _ = put_streams(WEB_PORT, listing, tag)
+    check(status == 200 and answer.get("changed") is True and answer.get("applied") is False
+          and streams_with_tag(WEB_PORT)[0][0].get("description") == "Saved standalone",
+          "standalone saves the list too, saying no control here has taken it up", "status %d" % status)
+
+    check_speakers_standalone(speaker, kitchen, data_dir)
+
 
 def main():
     if not os.access(BINARY, os.X_OK):
         sys.exit("Build it first: make")
 
     data_dir = tempfile.mkdtemp(prefix="cxstcc-e2e-")
-    logs = {"control": os.path.join(data_dir, "control.log"), "web": os.path.join(data_dir, "web.log")}
+    logs = {"control": os.path.join(data_dir, "control.log"), "web": os.path.join(data_dir, "web.log"),
+            "first-run": os.path.join(data_dir, "first-run.log")}
     verbose = os.environ.get("E2E_VERBOSE") == "1"
-    speaker = FakeSpeaker(host=SPEAKER_HOST, volume=15, log=(lambda line: print(line, flush=True)) if verbose else None)
+    speaker = FakeSpeaker(host=SPEAKER_HOST, volume=15, ssdp_port=SSDP_PORT,
+                          log=(lambda line: print(line, flush=True)) if verbose else None)
+    kitchen = FakeSpeaker(host=KITCHEN_HOST, device_id=KITCHEN_ID, name="Kitchen", volume=20, ssdp_port=SSDP_PORT)
     processes = []
 
     try:
@@ -571,17 +922,19 @@ def main():
             json.dump(TEST_STREAMS, out, indent=2)
         write_data_dir(data_dir, speaker)
         speaker.start()
+        kitchen.start()
 
         control = launch(["--data-dir", data_dir, "control", "--no-proxy", "--no-resume",
                           "--web", "--web-port", str(CONTROL_PORT), "--web-bind", "127.0.0.1"],
                          CONTROL_PORT, logs["control"])
         processes.append(control)
-        check_control(speaker, control)
+        check_control(speaker, control, data_dir)
 
         web = launch(["--data-dir", data_dir, "web", "--web-port", str(WEB_PORT), "--web-bind", "127.0.0.1"],
                      WEB_PORT, logs["web"])
         processes.append(web)
-        check_standalone(speaker)
+        check_standalone(speaker, kitchen, data_dir)
+        check_first_run(data_dir, processes)
     except (OSError, RuntimeError) as error:
         check(False, "setting up", str(error))
     finally:
@@ -594,6 +947,7 @@ def main():
                     process.kill()
                     process.wait()
         speaker.stop()
+        kitchen.stop()
         if not all(results):
             for name, path in logs.items():
                 if os.path.exists(path):

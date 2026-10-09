@@ -13,6 +13,7 @@ struct HttpRequest
     std::string query;     // the part after '?', empty when there is none
     std::string version;   // "HTTP/1.1", ...
     std::string contentType;   // the Content-Type header, empty when there is none
+    std::string ifMatch;       // the If-Match header, empty when there is none
     std::string body;          // the body, as long as Content-Length said; empty for a GET
 
     HttpRequest ()
@@ -50,6 +51,15 @@ namespace HttpUtil
     // The media type of a Content-Type, lower-cased and without its parameters:
     // "Application/JSON; charset=utf-8" gives "application/json".
     std::string mediaType (const std::string &contentType);
+
+    // An entity tag for these bytes, quoted as the ETag header carries it: the same bytes always give
+    // the same tag, and an edit, in practice, a different one. Not a security measure: it only tells
+    // whether a file has changed since it was read.
+    std::string entityTag (const std::string &bytes);
+
+    // Whether an If-Match header names this entity tag: "*", the tag itself, or a list with it in.
+    // A weak tag (W/"...") never matches, as for If-Match it must not.
+    bool ifMatches (const std::string &ifMatch, const std::string &tag);
 }
 
 #endif

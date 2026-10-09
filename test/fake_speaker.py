@@ -8,6 +8,10 @@ own (127.0.0.2 by default, so nothing already listening on 127.0.0.1 is in the w
   8090  the Web API: GET /info, /nowPlaying, /volume, /presets, /sources; POST /volume, /key, /select
   8091  UPnP AVTransport (SetAVTransportURI, Play, Stop), the way control hands the speaker a stream
 
+and, given an SSDP port (--ssdp-port), answers a UPnP M-SEARCH sent to it there as a SoundTouch does, so
+cxstcc's search for speakers finds it: point that search at the fake with
+CXSTCC_SSDP_TARGETS=127.0.0.2:<port>.
+
 POST /volume does what the real speaker does: it sets the level and pushes a volumeUpdated event to
 every connected listener, so the same curl works against either. POST /key takes the remote's keys as
 the API sends them (a press, then a release) and acts on the press, as a SoundTouch 30 without the
@@ -24,6 +28,7 @@ Test hooks, on port 8090:
   POST /fake/mute        body: true or false; sets mute and pushes volumeUpdated
   POST /fake/refuse      body: true or false; while true, POST /volume, /key, /select and UPnP are refused
   POST /fake/ignore-keys body: true or false; while true, keys and /select are taken but do nothing
+  POST /fake/ssdp        body: true or false; while false, the fake does not answer a search
   POST /fake/nowplaying  body: JSON with any of source, status, location, track, artist, album;
                          sets what /nowPlaying reports and pushes nowPlayingUpdated
   GET  /fake/state       the fake's state, as JSON
@@ -115,13 +120,47 @@ async def _read_frame(reader):
     return first & 0x0F, payload
 
 
+class _SsdpResponder(asyncio.DatagramProtocol):
+    """Answers a UPnP M-SEARCH as a SoundTouch does: where its description is (on its UPnP port,
+    which also tells the searcher its address) and its USN."""
+
+    def __init__(self, speaker):
+        self.speaker = speaker
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        speaker = self.speaker
+        if not speaker.announcing or not data.startswith(b"M-SEARCH"):
+            return
+        uuid = "BO5EBO5E-F00D-F00D-FEED-%s" % speaker.device_id
+        answer = ("HTTP/1.1 200 OK\r\n"
+                  "CACHE-CONTROL: max-age=1800\r\n"
+                  "EXT:\r\n"
+                  "LOCATION: http://%s:%d/XD/%s.xml\r\n"
+                  "SERVER: Linux UPnP/1.0 Bose\r\n"
+                  "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n"
+                  "USN: uuid:%s::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n"
+                  % (speaker.host, UPNP_PORT, uuid, uuid))
+        self.transport.sendto(answer.encode(), addr)
+        speaker._say("ssdp: answered a search from %s:%d" % addr)
+
+    def close(self):
+        if self.transport is not None:
+            self.transport.close()
+
+
 class FakeSpeaker:
     """The fake, serving on its own asyncio loop in a background thread. The set_* methods and push
     are safe from any thread, and return once the change has been sent to every listener."""
 
     def __init__(self, host="127.0.0.2", device_id=FAKE_DEVICE_ID, name="Fake SoundTouch",
-                 volume=15, muted=False, log=None):
+                 volume=15, muted=False, log=None, ssdp_port=None):
         self.host = host
+        self.ssdp_port = ssdp_port      # where it answers a search for speakers; None for nowhere
+        self.announcing = True          # while False, it does not answer one
         self.device_id = device_id
         self.name = name
         self.volume = volume
@@ -156,6 +195,10 @@ class FakeSpeaker:
                 for handler, port in ((self._serve_events, WS_PORT), (self._serve_api, REST_PORT),
                                       (self._serve_upnp, UPNP_PORT)):
                     servers.append(loop.run_until_complete(asyncio.start_server(handler, self.host, port)))
+                if self.ssdp_port:
+                    transport, _ = loop.run_until_complete(loop.create_datagram_endpoint(
+                        lambda: _SsdpResponder(self), local_addr=(self.host, self.ssdp_port)))
+                    servers.append(transport)
             except OSError as error:
                 failure.append(error)
             self._loop = loop
@@ -208,6 +251,10 @@ class FakeSpeaker:
 
     def set_ignoring_keys(self, ignoring):
         self.ignoring_keys = bool(ignoring)
+
+    def set_announcing(self, announcing):
+        """While False the fake does not answer a search, as if it were switched off."""
+        self.announcing = bool(announcing)
 
     def set_now_playing(self, **fields):
         unknown = set(fields) - set(NOW_PLAYING_FIELDS)
@@ -488,6 +535,9 @@ class FakeSpeaker:
             if path == "/fake/ignore-keys":
                 self.ignoring_keys = body.strip().lower() in ("1", "true", "on", "yes")
                 return 200, "text/plain", ("ignoring keys\n" if self.ignoring_keys else "acting on keys\n")
+            if path == "/fake/ssdp":
+                self.announcing = body.strip().lower() in ("1", "true", "on", "yes")
+                return 200, "text/plain", ("answering searches\n" if self.announcing else "not answering searches\n")
             if path == "/fake/nowplaying":
                 try:
                     fields = json.loads(body or "{}")
@@ -571,10 +621,14 @@ def main():
     parser.add_argument("--muted", action="store_true", help="start muted")
     parser.add_argument("--data-dir", help="also make this directory a cxstcc data dir that uses the fake")
     parser.add_argument("--quiet", action="store_true", help="do not log requests and events")
+    parser.add_argument("--id", default=FAKE_DEVICE_ID, help="its device ID (default %s)" % FAKE_DEVICE_ID)
+    parser.add_argument("--name", default="Fake SoundTouch", help="its name (default Fake SoundTouch)")
+    parser.add_argument("--ssdp-port", type=int, help="also answer a search for speakers on this UDP port")
     args = parser.parse_args()
 
-    speaker = FakeSpeaker(args.host, volume=args.volume, muted=args.muted,
-                          log=None if args.quiet else (lambda line: print(line, flush=True)))
+    speaker = FakeSpeaker(args.host, device_id=args.id, name=args.name, volume=args.volume, muted=args.muted,
+                          log=None if args.quiet else (lambda line: print(line, flush=True)),
+                          ssdp_port=args.ssdp_port)
     if args.data_dir:
         try:
             write_data_dir(args.data_dir, speaker)

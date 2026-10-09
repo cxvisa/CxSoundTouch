@@ -8,6 +8,8 @@ redirect the speaker to replacements for them. It uses only what the speaker its
 local network (its Web API, UPnP and event stream) and fetches the stations from their own servers.
 Nothing depends on the Bose cloud, and the speaker's firmware and server settings stay untouched.
 
+![The web dashboard, playing preset 1](docs/dashboard.png)
+
 ## Features
 
 - **Preset buttons work again:** the six buttons, and two- or three-digit button combos (up to 258
@@ -38,8 +40,8 @@ Titles, pause and skip need `control --update-track-info`, which is how the serv
 **Not supported or not tested yet:**
 
 - Tested only on a SoundTouch 30 (firmware 27.0.6) with internet radio; other models are untested.
-- Bluetooth, AUX and AirPlay are not integrated yet; they should keep working as before
-  ([details](#what-it-has-been-tested-with)).
+- AirPlay is not integrated yet; it should keep working as before
+  ([details](#what-it-has-been-tested-with)). Bluetooth and AUX are fully available in the dashboard.
 - No album art, and changing station takes ~5 s.
 
 ## What it has been tested with
@@ -48,12 +50,12 @@ So far only a **SoundTouch 30**, and only **internet radio stations** streamed t
 (the stations in `streams.json`). Other SoundTouch models have the same Web API and should work, but
 have not been tried.
 
-The speaker's other sources, such as **Bluetooth, AUX and AirPlay**, are not integrated yet; that is
-planned. They should already work as they always have, since they do not depend on the Bose cloud,
-and `control` stays out of their way. While the speaker is on one of them, `control` does not resume
-a station over it, push titles, or handle the remote's skip buttons, which stay with that source.
-Pressing a preset still switches to its station, as it should. None of this has been tried with
-`control` running yet.
+**Bluetooth and AUX** are fully available in the dashboard: its Bluetooth and AUX buttons switch the
+speaker to them, and the dashboard shows which one is playing. **AirPlay** is not integrated yet;
+that is planned. It should already work as it always has, since it does not depend on the Bose
+cloud. While the speaker is on any of these sources, `control` stays out of its way: it does not
+resume a station over it, push titles, or handle the remote's skip buttons, which stay with that
+source. Pressing a preset still switches to its station, as it should.
 
 Which of these sources a speaker has depends on its model, series and firmware, so check Bose's
 support site for your hardware. For example, on a SoundTouch 30 Series III, AirPlay 2 came with

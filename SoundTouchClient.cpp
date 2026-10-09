@@ -534,6 +534,21 @@ bool SoundTouchClient::pressKey (const std::string &key, long timeoutMs)
     return (true);
 }
 
+bool SoundTouchClient::selectSource (const std::string &source, const std::string &account, long timeoutMs)
+{
+    std::string response;
+    std::string body = "<ContentItem source=\"" + xmlEscape (source) + "\"";
+
+    if (!account.empty ())
+    {
+        body += " sourceAccount=\"" + xmlEscape (account) + "\"";
+    }
+
+    body += "></ContentItem>";
+
+    return (restPost ("/select", body, response, timeoutMs) && response.find ("<errors") == std::string::npos);
+}
+
 bool SoundTouchClient::stop ()
 {
     Say () << "\nStopping playback...\n";

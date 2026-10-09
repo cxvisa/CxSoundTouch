@@ -87,6 +87,10 @@ class SoundTouchClient
         // the press and release POSTs to /key the API asks for; each may take timeoutMs.
         bool        pressKey (const std::string &key, long timeoutMs = 10000);
 
+        // Switches to one of the speaker's own sources, as its source buttons do, through /select:
+        // BLUETOOTH (no account), or AUX (account AUX).
+        bool        selectSource (const std::string &source, const std::string &account, long timeoutMs = 10000);
+
     private :
 
         bool        pressButton (int button);

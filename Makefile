@@ -4,7 +4,7 @@ DEPFLAGS := -MMD -MP
 LDFLAGS  := -lcurl -lwebsockets -lpugixml
 
 TARGET   := cxstcc
-SOURCES  := main.cpp SoundTouchClient.cpp WebSocketListener.cpp StreamConfig.cpp DeviceDiscovery.cpp IcyDemuxer.cpp IcyReader.cpp StreamProxy.cpp HttpUtil.cpp WebJson.cpp WebServer.cpp
+SOURCES  := main.cpp SoundTouchClient.cpp WebSocketListener.cpp StreamConfig.cpp DeviceDiscovery.cpp IcyDemuxer.cpp IcyReader.cpp StreamProxy.cpp HttpUtil.cpp WebJson.cpp WebServer.cpp SpeakerConfig.cpp
 OBJECTS  := $(SOURCES:.cpp=.o)
 
 # Each object's header dependencies, written by the compiler as it builds.
@@ -24,15 +24,15 @@ clean:
 	rm -f $(OBJECTS) $(DEPENDS) $(TARGET) $(TEST_TARGET)
 
 # A small, dependency-free unit test for the web server's pure logic (HTTP request parsing, JSON
-# serialisation and the live-change signal). No gtest: it compiles only the units under test, which
-# pull in no sockets, curl or pugixml. Run: make test
+# serialisation, the stream list's rules and file, and the live-change signal). No gtest: it compiles
+# only the units under test, which pull in no sockets, curl or pugixml. Run: make test
 TEST_TARGET := webtest
-TEST_SRC    := test/WebTest.cpp HttpUtil.cpp WebJson.cpp
+TEST_SRC    := test/WebTest.cpp HttpUtil.cpp WebJson.cpp StreamConfig.cpp SpeakerConfig.cpp
 
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
-$(TEST_TARGET): $(TEST_SRC) HttpUtil.h WebJson.h LiveSignal.h StreamConfig.h DeviceDiscovery.h SoundTouchClient.h
+$(TEST_TARGET): $(TEST_SRC) HttpUtil.h WebJson.h LiveSignal.h StreamConfig.h SpeakerConfig.h DeviceDiscovery.h SoundTouchClient.h
 	$(CXX) $(CXXFLAGS) -I. -o $@ $(TEST_SRC)
 
 # End to end, with no real speaker: runs the built program against test/fake_speaker.py (a stand-in

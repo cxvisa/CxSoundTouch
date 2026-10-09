@@ -21,6 +21,13 @@ Nothing depends on the Bose cloud, and the speaker's firmware and server setting
   over a pause, standby or another source; reconnects when the speaker reboots.
 - **A web dashboard** (`control --web`): what is playing, live, with the presets, ⏮ ⏯ ⏭, Power,
   Bluetooth and AUX, and the volume at hand ([The dashboard](#the-dashboard)).
+- **Every stream playable from the dashboard,** on a preset or not: a play/pause button beside each
+  one, with the one playing highlighted.
+- **Streams edited in the dashboard:** add, delete and change them, then save; `control` uses the new
+  list at once, with no restart.
+- **A Speakers page** in the dashboard finds the SoundTouch speakers on the network, searching for as
+  long as it is open, and makes one of them the default; on first use the dashboard offers it
+  ([The Speakers page](#the-speakers-page)).
 - **Command line** to find speakers, play, stop, see what is playing and program the presets
   ([Usage](#usage)).
 - **Runs as a systemd service** ([systemd/README.md](systemd/README.md)) or a static container
@@ -64,9 +71,13 @@ make clean
 
 `make e2e` needs only `python3`. It runs the built binary against `test/fake_speaker.py`, a stand-in
 SoundTouch on 127.0.0.2 (its event stream on 8080, its Web API on 8090, UPnP on 8091) that sends the
-XML a SoundTouch 30 sends, so no real speaker is touched. The fake runs on its own for trying things
+XML a SoundTouch 30 sends, so no real speaker is touched, and a second one on 127.0.0.3 for the
+Speakers page; both answer searches for speakers on UDP port 19001, where the test sends them
+(`CXSTCC_SSDP_TARGETS=127.0.0.2:19001,127.0.0.3:19001`, a list of `address:port`, sends a search
+there instead of to the SSDP multicast group). The fake runs on its own for trying things
 by hand too: `python3 test/fake_speaker.py --data-dir /tmp/fake-st` prepares that data dir and
-prints the `cxstcc` and `curl` commands to drive it.
+prints the `cxstcc` and `curl` commands to drive it (`--id`, `--name` and `--ssdp-port` make
+another one to find).
 
 On Fedora, `sudo make deps-fedora` installs what the build needs: `gcc-c++`, `make`,
 `libcurl-devel`, `libwebsockets-devel`, `pugixml-devel` and `json-devel`. dnf lists them and asks
@@ -108,7 +119,8 @@ before installing. A minimal install may lack `make` itself: `sudo dnf install m
 ```
 
 Commands act on the default speaker from `devices.json`, falling back to `192.168.3.53` when that
-file is absent. Discovery runs only for the `discover` command.
+file is absent. Discovery runs only for the `discover` command and while the dashboard's Speakers
+page is open.
 
 `streams.json`, `devices.json` and `state.json` are read from, and written to, the current
 directory, or the one given by `--data-dir <dir>` (anywhere on the command line) or
@@ -128,7 +140,7 @@ option `control` or `nowplaying` does not know is an error, not silently ignored
 
 `control --web` serves a web dashboard on port 8081 (`--web-port`, or `SOUNDTOUCH_WEB_PORT`) beside
 what `control` does; `web` serves it on its own. It shows what is playing, the speaker's volume, the
-streams, the speakers found and the settings, and works the speaker as its remote and buttons do:
+streams, the speaker it controls and the settings, and works the speaker as its remote and buttons do:
 the six presets, named after their stations, ⏮ and ⏭, Play and Pause, Power, Bluetooth and AUX, and
 the volume, by its slider, by − and + (hold to repeat), or by typing a level. The preset tiles make
 the same combos as the remote's buttons (1 then 1 is preset 11), but a mouse has further to go than
@@ -141,7 +153,54 @@ Bluetooth and AUX its source, so `control` takes it just as it takes the remote,
 what the remote's power button does. Inside `control` the page hears of a change the moment the
 speaker reports it; on its own it looks every 3s. It listens on every interface, so anyone on the
 network can use it, as anyone there can already use the speaker's own Web API; `--web-bind
-127.0.0.1` keeps it to this machine.
+127.0.0.1` keeps it to this machine. That includes editing the streams.
+
+**Playing any stream.** Each stream in the list has a play button beside it, and the stream playing
+is highlighted. Inside `control`, the button plays its stream just as pressing its preset would, with
+the relay, the song titles and resuming, whether the stream is on a preset or not. It goes straight
+to `control` rather than pressing buttons, so it needs no combo window and works for a preset whose
+button has nothing stored on it yet. On the stream playing, the button pauses it and plays it again,
+as the remote's Pause and Play do. On its own, `web` presses a stream's preset buttons for a
+`control` running elsewhere to play, and hands a stream on no preset to the speaker itself, as
+`cxstcc play` does.
+
+**Editing the streams.** Edit turns the list into a form: change any field, add streams and delete
+them, and nothing is sent until Save, which sends the whole list at once; Discard, clicked twice,
+drops the changes instead. The page checks each field as it is typed, and the server checks the list
+again by the same rules: a name of letters, digits, `.`, `_` and `-`, used by no other stream; an
+`http://` or `https://` URL; a preset made of the buttons 1 to 6, on no other stream. A save
+rewrites `streams.json` whole, keeping `combo_window_ms`, anything else it holds and the order of its
+keys, with the file it replaced kept as `streams.json.bak`. A list changed meanwhile, by hand or from
+another dashboard, is not overwritten: the save is refused, and the page offers to load the list as
+it now is. Inside `control` the new list is used at once: the presets, the combos, and each stream
+the next time it is played. The stream playing carries on as it is, but shows a new display name or
+preset straight away. A `control` running elsewhere reads the saved file when it is next started. A
+preset on a button the speaker has nothing stored on needs `./cxstcc program-presets` before the
+remote's button, or its tile, plays it (see [Presets and button combos](#presets-and-button-combos)).
+
+For scripts, `GET /api/streams` sends the list with an `ETag`, and `PUT /api/streams` with
+`{"streams": [...]}` saves one, given that ETag as `If-Match` (412 when the file has changed since,
+428 without it, 400 with what is wrong with which stream). `POST /api/play` with `{"stream": "klove"}`
+plays a stream by its name.
+
+### The Speakers page
+
+The Speakers tab, or `/speakers`, keeps the dashboard itself uncluttered: the dashboard shows only
+the speaker it controls, with a link here. While the page is open it searches the network for
+SoundTouch speakers (SSDP, as `discover` does) every few seconds and updates the list as they answer:
+each one's name, address, model and device ID, whether it is online or when it was last seen, and
+which is the default. **Make default** saves a speaker as the default in `devices.json`, adding it
+when it is new and taking up a new address for a saved one, with the file it replaced kept as
+`devices.json.bak`; anything else the file holds is kept. A standalone `web` uses the new default at
+once; `control` drives the speaker it started with, so the page says a restart is needed to switch.
+The search stops by itself about 15 s after the page is closed or hidden. When no speaker has been
+chosen yet, the dashboard says so and offers to find one. The Dashboard tab, the title, ← Dashboard
+or Escape go back. A Groups section, for playing to several speakers at once, is to come.
+
+For scripts, `GET /api/speakers` lists the saved and found speakers; `POST /api/speakers/discover`
+with `{}` keeps the search going for another 15 s and answers the same list; `PUT
+/api/speakers/default` with `{"id": "<device id>"}` sets the default (404 for a speaker neither saved
+nor found, and `restart_needed` true inside a `control` driving another one).
 
 ## Configuration
 
@@ -153,7 +212,10 @@ speaker shows, and the optional `preset` maps a stream to a physical button for 
   "url": "http://maestro.emfcdn.com/stream_for/k-love/iheart/aac", "preset": 1 }
 ```
 
-`devices.json` is generated by `discover --save` and holds the speaker list plus `default_device`.
+It can be edited by hand or from the dashboard ([Editing the streams](#the-dashboard)).
+
+`devices.json` is generated by `discover --save`, or by the dashboard's
+[Speakers page](#the-speakers-page), and holds the speaker list plus `default_device`.
 
 ### Presets and button combos
 
@@ -177,7 +239,7 @@ with them, while `12` and `111` fire immediately on the last press. A digit that
 longer never waits at all. This means the buttons you overload are the slow ones — if a station is
 the one you reach for most, give it a preset that is not a prefix of anything.
 
-`streams.json` is the source of truth. After editing it, run:
+`streams.json` is the source of truth. After editing it, by hand or from the dashboard, run:
 
 ```bash
 ./cxstcc program-presets
@@ -198,7 +260,8 @@ programmed earlier and later dropped from `streams.json` keeps its old content. 
 playback and `control` logs that no stream is configured. Overwrite it rather than expecting to
 clear it.
 
-`control` reads `streams.json` once at startup, so restart it after editing.
+`control` reads `streams.json` once at startup, so restart it after editing the file by hand. A list
+saved from its own dashboard (`control --web`) is used at once.
 
 ## How control mode works
 
@@ -229,8 +292,9 @@ Two libwebsockets details the control loop depends on, both learned the hard way
 If the speaker reboots or drops off the network, `control` notices its event stream closing and
 reconnects by itself every 3s until the speaker is back; a button pressed meanwhile is lost.
 
-**Resuming.** `control` remembers the last preset played in `state.json` and brings it back by
-itself, unless started with `--no-resume`:
+**Resuming.** `control` remembers what played last in `state.json`, by its name, and brings it back
+by itself, unless started with `--no-resume`. So a stream on no preset, played from the dashboard,
+comes back too, and a stream whose preset has since moved is still the one brought back:
 
 - **At start-up**, so restarting `control` or the machine does not leave the speaker silent. Not if
   the speaker is off (standby), so it never switches it on by itself, nor if it is on another source
@@ -467,7 +531,8 @@ docker run -d --name soundtouch --restart unless-stopped --init --network host \
 - **Host networking is required:** the relay tells the speaker this host's address, and
   discovery uses multicast. On a bridge network the speaker would be sent an address it cannot
   reach.
-- **`/data`** holds `streams.json` and `devices.json`, and `state.json` is written there. The image
+- **`/data`** holds `streams.json` and `devices.json`, and `state.json` is written there, as are
+  `streams.json` and `streams.json.bak` when the streams are saved from the dashboard. The image
   runs as uid/gid 1000; if the directory belongs to someone else, add
   `--user "$(id -u):$(id -g)"`.
 - **Only one `control` at a time:** two would fight over port 8899 and both answer the buttons.
@@ -478,7 +543,9 @@ docker run -d --name soundtouch --restart unless-stopped --init --network host \
 - Memory: a few MB plus the relay's buffer as it fills, so up to ~20 MB with the default 16 MB
   (`-e SOUNDTOUCH_RELAY_BUFFER=…` to change it).
 - If `state.json` cannot be written, say the directory belongs to another user, a warning names the
-  directory and the reason; the speaker keeps playing, but the last preset is not remembered.
+  directory and the reason; the speaker keeps playing, but what played last is not remembered.
+  Likewise a save from the dashboard says why it could not write `streams.json`. A `streams.json`
+  mounted on its own, rather than in its directory, cannot be replaced, so it is rewritten in place.
 - Mounting a single file that does not exist on the host (`-v ~/st/state.json:/data/state.json`)
   makes docker create a directory in its place. That is reported (`cannot read state.json: ... Is a
   directory`) rather than crashing; mount the directory instead.
@@ -488,13 +555,14 @@ docker run -d --name soundtouch --restart unless-stopped --init --network host \
 - `main.cpp` — CLI
 - `SoundTouchClient.{h,cpp}` — UPnP SOAP (port 8091) and REST (port 8090) via libcurl
 - `WebSocketListener.{h,cpp}` — event loop on the `gabbo` WebSocket (port 8080)
-- `StreamConfig.{h,cpp}` — `streams.json`
+- `StreamConfig.{h,cpp}` — `streams.json`: reading it, the rules a saved list keeps to, and saving it
 - `DeviceDiscovery.{h,cpp}` — SSDP discovery and `devices.json`
+- `SpeakerConfig.{h,cpp}` — `devices.json` for the Speakers page: the default, and saving it
 - `IcyDemuxer.{h,cpp}` — splits a stream into audio and its ICY song titles
 - `IcyReader.{h,cpp}` — reads song titles over a connection of its own
 - `StreamProxy.{h,cpp}` — the relay used by `control --update-track-info`
 - `WebServer.{h,cpp}` — the dashboard and its JSON API (`web`, `control --web`)
-- `WebAssets.h` — the dashboard page, embedded in the binary
+- `WebAssets.h` — the dashboard and Speakers pages, embedded in the binary
 - `WebJson.{h,cpp}`, `HttpUtil.{h,cpp}` — the dashboard's JSON, and its HTTP request parsing
 - `LiveSignal.h` — wakes the dashboard's held request when control's live state, such as the volume, changes
 - `Say.h` — output written a line at a time, so threads' lines never mix

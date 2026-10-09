@@ -3,6 +3,7 @@
 #include "WebAssets.h"
 #include "StreamConfig.h"
 #include "DeviceDiscovery.h"
+#include "SpeakerConfig.h"
 #include "SoundTouchClient.h"
 #include "StreamProxy.h"
 #include "Say.h"
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 
 namespace
 {
@@ -35,13 +37,45 @@ namespace
             case 404 : return ("Not Found");
             case 405 : return ("Method Not Allowed");
             case 409 : return ("Conflict");
+            case 412 : return ("Precondition Failed");
             case 413 : return ("Payload Too Large");
             case 415 : return ("Unsupported Media Type");
+            case 428 : return ("Precondition Required");
+            case 500 : return ("Internal Server Error");
             case 502 : return ("Bad Gateway");
             case 503 : return ("Service Unavailable");
             case 504 : return ("Gateway Timeout");
             default  : return ("OK");
         }
+    }
+
+    // A data file as it is on disk: 0 with its text, ENOENT (and "") when there is none, else the errno
+    // that stopped it being read.
+    int readDataFile (const char *path, std::string &text)
+    {
+        text.clear ();
+
+        errno = 0;
+
+        std::ifstream ifs (path, std::ios::binary);
+
+        if (!ifs.is_open ())
+        {
+            return ((errno != 0) ? errno : ENOENT);
+        }
+
+        try
+        {
+            text.assign (std::istreambuf_iterator<char> (ifs), std::istreambuf_iterator<char> ());
+        }
+        catch (const std::exception &)
+        {
+            // Such as a directory where the file should be.
+            text.clear ();
+            return ((errno != 0) ? errno : EIO);
+        }
+
+        return (0);
     }
 
     // The dashboard's changes come only as JSON, which a page on another site cannot send here without
@@ -87,10 +121,11 @@ namespace
     }
 }
 
-WebServer::WebServer (const Settings &settings, LiveStatus liveStatus, LiveSignal *liveSignal)
+WebServer::WebServer (const Settings &settings, LiveStatus liveStatus, LiveSignal *liveSignal, ControlHooks hooks)
     : m_settings (settings),
       m_liveStatus (std::move (liveStatus)),
       m_liveSignal (liveSignal),
+      m_hooks (std::move (hooks)),
       m_liveWaiters (0),
       m_listenFd (-1),
       m_running (false),
@@ -178,6 +213,17 @@ void WebServer::stop ()
     if (m_acceptThread.joinable ())
     {
         m_acceptThread.join ();
+    }
+
+    // The search for speakers ends at once: woken in its pause, or cancelled within ~100 ms in a pass.
+    {
+        std::lock_guard<std::mutex> lock (m_searchMutex);
+        m_searchWake.notify_all ();
+    }
+
+    if (m_searchThread.joinable ())
+    {
+        m_searchThread.join ();
     }
 
     if (m_listenFd >= 0)
@@ -323,6 +369,11 @@ void WebServer::serveConnection (Connection *connection, int fd)
         head += "Content-Encoding: " + response.encoding + "\r\n";
     }
 
+    for (const auto &[name, value] : response.headers)
+    {
+        head += name + ": " + value + "\r\n";
+    }
+
     head += "Content-Length: " + std::to_string (response.body.size ()) + "\r\n";
     head += "Cache-Control: no-store\r\n";
     head += "Connection: close\r\n\r\n";
@@ -352,6 +403,7 @@ int WebServer::readBody (int fd, const std::string &received, HttpRequest &reque
     std::uint64_t length = 0;
 
     request.contentType = HttpUtil::headerValue (head, "Content-Type");
+    request.ifMatch = HttpUtil::headerValue (head, "If-Match");
 
     if (lengthText.empty ())
     {
@@ -364,9 +416,10 @@ int WebServer::readBody (int fd, const std::string &received, HttpRequest &reque
     }
 
     const bool asksFirst = (HttpUtil::headerValue (head, "Expect") == "100-continue");
+    const size_t limit = (request.path == "/api/streams") ? MAX_STREAMS_BODY : MAX_BODY;
 
     // Too large, and the client is waiting to be told to send it: just refuse.
-    if (length > MAX_BODY && asksFirst)
+    if (length > limit && asksFirst)
     {
         return (413);
     }
@@ -375,7 +428,7 @@ int WebServer::readBody (int fd, const std::string &received, HttpRequest &reque
 
     // A body too large to take is still read, up to a point, and thrown away: closing with it unread
     // would reset the connection, and the client could lose the refusal.
-    const std::uint64_t wanted = (length > MAX_BODY) ? std::min<std::uint64_t> (length, MAX_DISCARD) : length;
+    const std::uint64_t wanted = (length > limit) ? std::min<std::uint64_t> (length, MAX_DISCARD) : length;
 
     // A client that asks before sending its body (curl does, for a larger one) is told to go ahead.
     if (body.size () < wanted && asksFirst)
@@ -406,7 +459,7 @@ int WebServer::readBody (int fd, const std::string &received, HttpRequest &reque
         body.append (scratch, static_cast<size_t> (got));
     }
 
-    if (length > MAX_BODY)
+    if (length > limit)
     {
         return (413);
     }
@@ -426,9 +479,10 @@ WebServer::Response WebServer::route (const HttpRequest &request)
 {
     const std::string &path = request.path;
 
-    // The few things the dashboard changes, each a POST; everything else is only looked at.
+    // The things the dashboard changes, each a POST, and the stream list it saves with a PUT;
+    // everything else is only looked at.
     if (path == "/api/volume" || path == "/api/playback" || path == "/api/power" || path == "/api/preset"
-        || path == "/api/skip" || path == "/api/source" || path == "/api/select")
+        || path == "/api/skip" || path == "/api/source" || path == "/api/select" || path == "/api/play")
     {
         if (request.method != "POST")
         {
@@ -460,7 +514,27 @@ WebServer::Response WebServer::route (const HttpRequest &request)
             return (playPreset (request));
         }
 
+        if (path == "/api/play")
+        {
+            return (playStream (request));
+        }
+
         return ((path == "/api/skip") ? skip (request) : inputSource (request));
+    }
+
+    if (path == "/api/streams" && request.method == "PUT")
+    {
+        return (saveStreams (request));
+    }
+
+    if (path == "/api/speakers/discover")
+    {
+        return ((request.method == "POST") ? discoverSpeakers (request) : text (405, "Method Not Allowed"));
+    }
+
+    if (path == "/api/speakers/default")
+    {
+        return ((request.method == "PUT") ? setDefaultSpeaker (request) : text (405, "Method Not Allowed"));
     }
 
     if (request.method != "GET" && request.method != "HEAD")
@@ -473,6 +547,16 @@ WebServer::Response WebServer::route (const HttpRequest &request)
         return (Response { 200, "text/html; charset=utf-8", DASHBOARD_HTML, "" });
     }
 
+    if (path == "/speakers")
+    {
+        return (Response { 200, "text/html; charset=utf-8", SPEAKERS_HTML, "" });
+    }
+
+    if (path == "/api/speakers")
+    {
+        return (json (200, speakersJson ()));
+    }
+
     if (path == "/api/health")
     {
         return (json (200, nlohmann::json { { "ok", true }, { "version", m_settings.version } }));
@@ -480,7 +564,7 @@ WebServer::Response WebServer::route (const HttpRequest &request)
 
     if (path == "/api/streams")
     {
-        return (json (200, streamsJson ()));
+        return (streamsList ());
     }
 
     if (path == "/api/devices")
@@ -516,13 +600,37 @@ WebServer::Response WebServer::route (const HttpRequest &request)
     return (json (404, nlohmann::json { { "error", "not found" }, { "path", path } }));
 }
 
-nlohmann::json WebServer::streamsJson () const
+// The stream list as streams.json has it, read fresh, with its ETag: the version of the file it came
+// from, which a save of the list must send back as If-Match (see saveStreams).
+WebServer::Response WebServer::streamsList ()
 {
+    std::string text;
+    const int failure = readStreamsFile (text);
     StreamConfig config;
 
-    config.loadFromFile (STREAMS_FILE, true);
+    if (failure == 0)
+    {
+        config.loadFromText (text, true, STREAMS_FILE);
+    }
+    else if (failure != ENOENT)
+    {
+        Say (std::cerr) << "Error: cannot read " << STREAMS_FILE << ": " << std::strerror (failure) << "\n";
+    }
 
-    return (WebJson::streams (config.getStreams ()));
+    Response response = json (200, WebJson::streams (config.getStreams ()));
+
+    // A file that cannot be read gets no ETag, so nothing can be saved over it unseen.
+    if (failure == 0 || failure == ENOENT)
+    {
+        response.headers.emplace_back ("ETag", HttpUtil::entityTag (text));
+    }
+
+    return (response);
+}
+
+int WebServer::readStreamsFile (std::string &text)
+{
+    return (readDataFile (STREAMS_FILE, text));
 }
 
 nlohmann::json WebServer::devicesJson () const
@@ -535,6 +643,237 @@ nlohmann::json WebServer::devicesJson () const
     const std::string defaultId = (defaultDevice != nullptr) ? defaultDevice->deviceId : std::string ();
 
     return (WebJson::devices (discovery.getDevices (), defaultId));
+}
+
+// The saved speakers and those the search has found, for the Speakers page (see WebJson::speakers).
+nlohmann::json WebServer::speakersJson ()
+{
+    std::string text;
+    SpeakerConfig saved;
+
+    if (readDataFile (DEVICES_FILE, text) == 0)
+    {
+        saved.loadFromText (text);
+    }
+
+    std::vector<WebJson::SeenSpeaker> seen;
+    WebJson::SpeakerSearch search;
+
+    {
+        std::lock_guard<std::mutex> lock (m_searchMutex);
+        const auto now = std::chrono::steady_clock::now ();
+
+        for (const auto &[key, sighting] : m_sightings)
+        {
+            WebJson::SeenSpeaker item;
+
+            item.device = sighting.device;
+            item.agoMs = std::chrono::duration_cast<std::chrono::milliseconds> (now - sighting.at).count ();
+            seen.push_back (item);
+        }
+
+        search.active = m_searchRunning;
+        search.searching = m_searching;
+        search.passes = m_searchPasses;
+
+        if (m_searchPasses > 0)
+        {
+            search.lastAgoMs = std::chrono::duration_cast<std::chrono::milliseconds> (now - m_lastPassAt).count ();
+        }
+    }
+
+    return (WebJson::speakers (saved, seen, search, ONLINE_WINDOW.count (),
+                               m_settings.embedded ? m_settings.defaultDeviceIp : std::string ()));
+}
+
+// POST /api/speakers/discover, as JSON (see takesJson): keeps the search for speakers going for
+// SEARCH_LEASE more, starting it if need be, and answers what is known so far. The Speakers page asks
+// every couple of seconds while it is open; nothing searches once no page has asked for a while.
+WebServer::Response WebServer::discoverSpeakers (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {}" } }));
+    }
+
+    renewSearch ();
+
+    return (json (200, speakersJson ()));
+}
+
+void WebServer::renewSearch ()
+{
+    std::lock_guard<std::mutex> lock (m_searchMutex);
+
+    m_searchUntil = std::chrono::steady_clock::now () + SEARCH_LEASE;
+
+    if (m_searchRunning || m_stopping)
+    {
+        return;
+    }
+
+    // A search that ran out has already finished with the mutex, so joining it here cannot wait on it.
+    if (m_searchThread.joinable ())
+    {
+        m_searchThread.join ();
+    }
+
+    m_searchRunning = true;
+    m_searchThread = std::thread (&WebServer::searchLoop, this);
+}
+
+void WebServer::searchLoop ()
+{
+    for (;;)
+    {
+        {
+            std::lock_guard<std::mutex> lock (m_searchMutex);
+
+            if (m_stopping || std::chrono::steady_clock::now () >= m_searchUntil)
+            {
+                m_searchRunning = false;
+                m_searching = false;
+                return;
+            }
+
+            m_searching = true;
+        }
+
+        DeviceDiscovery discovery;
+
+        discovery.discover (SEARCH_LISTEN_SECONDS, true, &m_stopping);
+
+        {
+            std::lock_guard<std::mutex> lock (m_searchMutex);
+            const auto now = std::chrono::steady_clock::now ();
+
+            for (const SoundTouchDevice &device : discovery.getDevices ())
+            {
+                // Only what says who it is on :8090/info, as a SoundTouch does: other media players
+                // answer the search too. A speaker already known that did not say this time is still
+                // there, at the address it had.
+                if (device.deviceId.empty ())
+                {
+                    for (auto &entry : m_sightings)
+                    {
+                        if (entry.second.device.ipAddress == device.ipAddress)
+                        {
+                            entry.second.at = now;
+                        }
+                    }
+
+                    continue;
+                }
+
+                m_sightings[device.deviceId] = Sighting { device, now };
+            }
+
+            for (auto it = m_sightings.begin (); it != m_sightings.end (); )
+            {
+                it = (now - it->second.at > FORGET_UNSAVED) ? m_sightings.erase (it) : std::next (it);
+            }
+
+            m_searching = false;
+            ++m_searchPasses;
+            m_lastPassAt = now;
+        }
+
+        std::unique_lock<std::mutex> lock (m_searchMutex);
+
+        m_searchWake.wait_for (lock, SEARCH_PAUSE, [this] () { return (m_stopping.load ()); });
+    }
+}
+
+// PUT /api/speakers/default {"id": "..."}, as JSON: makes the speaker of that device ID the default,
+// saving devices.json. A speaker the search found is saved with it; a saved one the search found at a
+// new address is saved at that address. Standalone, the dashboard drives the new default at once;
+// inside control it is taken up when control next starts, which the answer's restart_needed says.
+WebServer::Response WebServer::setDefaultSpeaker (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {\"id\": \"<device id>\"}" } }));
+    }
+
+    std::string id;
+
+    if (!WebJson::parseSpeakerId (request.body, id))
+    {
+        return (json (400, nlohmann::json { { "error", "send {\"id\": \"<device id>\"}" } }));
+    }
+
+    std::vector<SoundTouchDevice> found;
+
+    {
+        std::lock_guard<std::mutex> lock (m_searchMutex);
+
+        for (const auto &[key, sighting] : m_sightings)
+        {
+            if (!sighting.device.deviceId.empty ())
+            {
+                found.push_back (sighting.device);
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock (m_speakersMutex);
+
+    std::string existing;
+    const int failure = readDataFile (DEVICES_FILE, existing);
+
+    if (failure != 0 && failure != ENOENT)
+    {
+        return (json (500, nlohmann::json { { "error", std::string ("cannot read ") + DEVICES_FILE + ": " + std::strerror (failure) } }));
+    }
+
+    SpeakerConfig speakers;
+
+    // A file that cannot be read is not written over, so nothing in it is lost.
+    if (!existing.empty () && !speakers.loadFromText (existing))
+    {
+        return (json (409, nlohmann::json { { "error", std::string (DEVICES_FILE) + " is not valid JSON; fix or remove it first" } }));
+    }
+
+    for (const SoundTouchDevice &device : found)
+    {
+        if (device.deviceId == id || speakers.findById (device.deviceId) != nullptr)
+        {
+            speakers.remember (device);
+        }
+    }
+
+    if (!speakers.setDefault (id))
+    {
+        return (json (404, nlohmann::json { { "error", "no speaker with that ID has been found or saved" }, { "id", id } }));
+    }
+
+    const std::string text = speakers.fileText (existing);
+    const bool changed = (text != existing);
+
+    if (changed)
+    {
+        std::string error;
+
+        if (!StreamConfig::saveFile (DEVICES_FILE, text, existing, error))
+        {
+            return (json (500, nlohmann::json { { "error", error } }));
+        }
+
+        const SoundTouchDevice *chosen = speakers.findById (id);
+
+        Say () << ">>> Default speaker set from the dashboard: " << id
+               << (chosen->deviceName.empty () ? std::string () : " (" + chosen->deviceName + ")")
+               << " at " << chosen->ipAddress << "\n";
+    }
+
+    const SoundTouchDevice *chosen = speakers.findById (id);
+    nlohmann::json answer = speakersJson ();
+
+    answer["ok"] = true;
+    answer["changed"] = changed;
+    answer["restart_needed"] = m_settings.embedded && chosen->ipAddress != m_settings.defaultDeviceIp;
+
+    return (json (200, answer));
 }
 
 nlohmann::json WebServer::configJson () const
@@ -575,6 +914,7 @@ nlohmann::json WebServer::stateJson () const
 {
     nlohmann::json json;
     int lastPreset = 0;
+    std::string lastStream;
 
     std::ifstream ifs (STATE_FILE);
 
@@ -582,31 +922,39 @@ nlohmann::json WebServer::stateJson () const
     {
         try
         {
-            lastPreset = nlohmann::json::parse (ifs).value ("last_preset", 0);
+            const nlohmann::json state = nlohmann::json::parse (ifs);
+
+            lastPreset = state.value ("last_preset", 0);
+            lastStream = state.value ("last_stream", std::string ());
         }
         catch (const std::exception &)
         {
             lastPreset = 0;
+            lastStream.clear ();
         }
     }
 
     json["last_preset"] = lastPreset;
+    json["last_stream"] = lastStream;
 
     StreamConfig config;
 
     config.loadFromFile (STREAMS_FILE, true);
 
-    const Stream *stream = (lastPreset != 0) ? config.findByPreset (lastPreset) : nullptr;
+    // What played last is known by its name; a state.json from before that, only by its preset.
+    const Stream *stream = !lastStream.empty () ? config.findByName (lastStream)
+                         : (lastPreset != 0) ? config.findByPreset (lastPreset) : nullptr;
 
     json["station"] = (stream != nullptr) ? stream->displayName : std::string ();
 
     return (json);
 }
 
-void WebServer::resolveStation (const std::string &location, std::string &name, int &preset) const
+void WebServer::resolveStation (const std::string &location, std::string &station, int &preset, std::string &name) const
 {
-    name.clear ();
+    station.clear ();
     preset = 0;
+    name.clear ();
 
     if (location.empty ())
     {
@@ -631,8 +979,9 @@ void WebServer::resolveStation (const std::string &location, std::string &name, 
 
     if (stream != nullptr)
     {
-        name = stream->displayName;
+        station = stream->displayName;
         preset = stream->preset;
+        name = stream->name;
     }
 }
 
@@ -658,10 +1007,11 @@ nlohmann::json WebServer::nowPlayingJson ()
     const SoundTouchClient::Volume vol = client.volume (1200);
     std::string station;
     int stationPreset = 0;
+    std::string stationName;
 
-    resolveStation (now.location, station, stationPreset);
+    resolveStation (now.location, station, stationPreset, stationName);
 
-    nlohmann::json json = WebJson::nowPlaying (now, station, vol, stationPreset);
+    nlohmann::json json = WebJson::nowPlaying (now, station, vol, stationPreset, stationName);
 
     {
         std::lock_guard<std::mutex> lock (m_nowPlayingMutex);
@@ -924,25 +1274,215 @@ WebServer::Response WebServer::playPreset (const HttpRequest &request)
     const std::string station = stream->displayName.empty () ? stream->name : stream->displayName;
     const int gapMs = std::max (50, config.getComboWindowMs () / 3);
 
+    if (!pressButtons (buttons, gapMs))
     {
-        std::lock_guard<std::mutex> lock (m_keyMutex);
-        SoundTouchClient client (speakerIp ());
-
-        for (size_t i = 0; i < buttons.size (); ++i)
-        {
-            if (i != 0)
-            {
-                std::this_thread::sleep_for (std::chrono::milliseconds (gapMs));
-            }
-
-            if (!client.pressKey ("PRESET_" + std::to_string (buttons[i]), KEY_TIMEOUT_MS))
-            {
-                return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
-            }
-        }
+        return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
     }
 
     return (json (200, nlohmann::json { { "ok", true }, { "preset", number }, { "station", station } }));
+}
+
+bool WebServer::pressButtons (const std::vector<int> &buttons, int gapMs)
+{
+    std::lock_guard<std::mutex> lock (m_keyMutex);
+    SoundTouchClient client (speakerIp ());
+
+    for (size_t i = 0; i < buttons.size (); ++i)
+    {
+        if (i != 0)
+        {
+            std::this_thread::sleep_for (std::chrono::milliseconds (gapMs));
+        }
+
+        if (!client.pressKey ("PRESET_" + std::to_string (buttons[i]), KEY_TIMEOUT_MS))
+        {
+            return (false);
+        }
+    }
+
+    return (true);
+}
+
+// A stream by its name, as the play button beside it on the dashboard: POST {"stream": "klove"}, on a
+// preset or not. Inside control, control plays it just as it plays a preset when one is pressed: the
+// press stops what was playing, and the stream starts through the relay, with its song titles, and is
+// what control brings back after a drop or a restart. It answers once the speaker is playing it, 504
+// when it is not in time. Standalone, a stream on a preset has its buttons pressed, as /api/select
+// does, for control to play wherever it runs; one on no preset is handed to the speaker directly, as
+// `cxstcc play` does. 404 for a name no stream has.
+WebServer::Response WebServer::playStream (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {\"stream\": name}" } }));
+    }
+
+    std::string name;
+
+    if (!WebJson::parsePlayStream (request.body, name))
+    {
+        return (json (400, nlohmann::json { { "error", "expected {\"stream\": name}, a stream's name" } }));
+    }
+
+    StreamConfig config;
+    std::string fileText;
+
+    if (readStreamsFile (fileText) == 0)
+    {
+        config.loadFromText (fileText, true, STREAMS_FILE);
+    }
+
+    const Stream *found = config.findByName (name);
+
+    if (found == nullptr)
+    {
+        return (json (404, nlohmann::json { { "error", "no stream is called " + name } }));
+    }
+
+    const Stream stream = *found;
+    const std::string station = stream.displayName.empty () ? stream.name : stream.displayName;
+    nlohmann::json answer { { "ok", true }, { "stream", name }, { "station", station } };
+
+    if (m_hooks.playStream)
+    {
+        const int refused = m_hooks.playStream (name);
+
+        if (refused != 0)
+        {
+            return (json (refused, nlohmann::json { { "error", (refused == 404)
+                                                          ? "control has no stream called " + name + "; save the list, or restart control"
+                                                          : std::string ("control cannot play it now") } }));
+        }
+
+        // Through the relay the speaker is given the relay's address, with the stream's name in it.
+        const bool started = waitForSpeaker ([&stream] (const SpeakerState &state)
+        {
+            return (state.source == "UPNP" && (state.status == "PLAY_STATE" || state.status == "BUFFERING_STATE")
+                    && (state.location == stream.url || StreamProxy::streamNameFromUrl (state.location, 0) == stream.name));
+        }, PLAY_SETTLE);
+
+        if (!started)
+        {
+            return (json (504, nlohmann::json { { "error", station + " has not started" } }));
+        }
+
+        return (json (200, answer));
+    }
+
+    std::vector<int> buttons;
+
+    if (stream.preset > 0 && WebJson::buttonsOf (stream.preset, buttons))
+    {
+        if (!pressButtons (buttons, std::max (50, config.getComboWindowMs () / 3)))
+        {
+            return (json (502, nlohmann::json { { "error", "the speaker did not take the key" } }));
+        }
+
+        answer["preset"] = stream.preset;
+
+        return (json (200, answer));
+    }
+
+    SoundTouchClient client (speakerIp ());
+    const bool played = client.playStream (stream.url, station);
+
+    {
+        std::lock_guard<std::mutex> lock (m_nowPlayingMutex);
+
+        m_nowPlayingCached = false;
+    }
+
+    if (!played)
+    {
+        return (json (502, nlohmann::json { { "error", "the speaker did not play " + station } }));
+    }
+
+    return (json (200, answer));
+}
+
+// The whole stream list, as the dashboard's editor saves it: PUT {"streams": [...]}, the streams in
+// the order wanted, with If-Match set to the ETag the list was read with (GET /api/streams). A list
+// changed meanwhile, from another dashboard or by hand, is not overwritten unseen: that is 412, and
+// no If-Match at all is 428. A list that breaks the rules is 400, saying what is wrong with which
+// stream, and nothing is written. Otherwise streams.json is rewritten whole, keeping combo_window_ms
+// and whatever else it holds, with the old one kept as streams.json.bak. Inside control the new list
+// takes effect at once: a stream starts as it now is the next time it is played.
+WebServer::Response WebServer::saveStreams (const HttpRequest &request)
+{
+    if (!takesJson (request))
+    {
+        return (json (415, nlohmann::json { { "error", "send JSON: {\"streams\": [...]}" } }));
+    }
+
+    if (request.ifMatch.empty ())
+    {
+        return (json (428, nlohmann::json { { "error", "send If-Match with the ETag of the list being changed, from GET /api/streams" } }));
+    }
+
+    std::vector<Stream> streams;
+    nlohmann::json problems;
+
+    if (!WebJson::parseStreams (request.body, streams, problems))
+    {
+        const std::string first = problems.empty () ? std::string ("not a stream list")
+                                                     : problems[0].value ("error", std::string ("not a stream list"));
+
+        return (json (400, nlohmann::json { { "error", first }, { "problems", problems } }));
+    }
+
+    std::lock_guard<std::mutex> lock (m_streamsMutex);
+
+    std::string existing;
+    const int failure = readStreamsFile (existing);
+
+    if (failure != 0 && failure != ENOENT)
+    {
+        return (json (500, nlohmann::json { { "error", std::string ("cannot read ") + STREAMS_FILE + ": " + std::strerror (failure) } }));
+    }
+
+    const std::string current = HttpUtil::entityTag (existing);
+
+    if (!HttpUtil::ifMatches (request.ifMatch, current))
+    {
+        Response refused = json (412, nlohmann::json { { "error", "the streams have been changed since this list was loaded" } });
+
+        refused.headers.emplace_back ("ETag", current);
+
+        return (refused);
+    }
+
+    const std::string text = StreamConfig::fileText (streams, existing);
+    const bool changed = (text != existing);
+
+    if (changed)
+    {
+        std::string error;
+
+        if (!StreamConfig::saveFile (STREAMS_FILE, text, existing, error))
+        {
+            return (json (500, nlohmann::json { { "error", error } }));
+        }
+
+        Say () << ">>> " << STREAMS_FILE << " saved from the dashboard: " << streams.size ()
+               << (streams.size () == 1 ? " stream\n" : " streams\n");
+
+        if (m_hooks.streamsSaved)
+        {
+            m_hooks.streamsSaved (text);
+        }
+    }
+
+    StreamConfig saved;
+
+    saved.loadFromText (text, true, STREAMS_FILE);
+
+    Response response = json (200, nlohmann::json { { "ok", true }, { "changed", changed },
+                                                    { "applied", changed && static_cast<bool> (m_hooks.streamsSaved) },
+                                                    { "streams", WebJson::streams (saved.getStreams ()) } });
+
+    response.headers.emplace_back ("ETag", HttpUtil::entityTag (text));
+
+    return (response);
 }
 
 // The remote's skip keys: POST {"direction": "next"} or {"direction": "previous"} presses NEXT_TRACK
@@ -1049,6 +1589,7 @@ WebServer::SpeakerState WebServer::speakerState ()
 
         state.source = field ("source");
         state.status = field ("status");
+        state.location = field ("location");
 
         return (state);
     }
@@ -1058,6 +1599,7 @@ WebServer::SpeakerState WebServer::speakerState ()
 
     state.source = now.source;
     state.status = now.status;
+    state.location = now.location;
 
     return (state);
 }

@@ -7,6 +7,7 @@
 #include "WebServer.h"
 #include "LiveSignal.h"
 #include "Say.h"
+#include <curl/curl.h>
 #include <mutex>
 #include <iostream>
 #include <string>
@@ -140,34 +141,42 @@ static bool isStreamLocation (const std::string &location)
     return (!location.empty () && location != "unplayable location");
 }
 
-static int loadLastPreset ()
+// What played last, to bring back: its name and its preset (0 for none). A state.json from before
+// streams were remembered by name has only the preset.
+static void loadLastPlayed (int &preset, std::string &name)
 {
+    preset = 0;
+    name.clear ();
+
     std::ifstream ifs (STATE_FILE);
 
     if (!ifs.is_open ())
     {
-        return (0);
+        return;
     }
 
     try
     {
         const nlohmann::json state = nlohmann::json::parse (ifs);
 
-        return (state.value ("last_preset", 0));
+        preset = state.value ("last_preset", 0);
+        name = state.value ("last_stream", std::string ());
     }
     catch (const nlohmann::json::exception &)
     {
-        return (0);
+        preset = 0;
+        name.clear ();
     }
     catch (const std::exception &e)
     {
         // Such as a directory where the file should be, as a docker bind mount of a missing file makes.
         Say (std::cerr) << "Warning: cannot read " << STATE_FILE << ": " << e.what () << "\n";
-        return (0);
+        preset = 0;
+        name.clear ();
     }
 }
 
-static void saveLastPreset (int preset)
+static void saveLastPlayed (int preset, const std::string &name)
 {
     errno = 0;
 
@@ -178,7 +187,7 @@ static void saveLastPreset (int preset)
     {
         errno = 0;
 
-        ofs << nlohmann::json { { "last_preset", preset } }.dump (2) << "\n";
+        ofs << nlohmann::json { { "last_preset", preset }, { "last_stream", name } }.dump (2) << "\n";
         ofs.close ();
 
         if (ofs.fail ())
@@ -199,7 +208,7 @@ static void saveLastPreset (int preset)
         }
 
         Say (std::cerr) << "Warning: cannot save " << STATE_FILE << " in " << directory << ": "
-                        << std::strerror (failure) << "; the last preset will not be remembered.\n";
+                        << std::strerror (failure) << "; what played last will not be remembered.\n";
     }
 }
 
@@ -306,6 +315,19 @@ static const Stream *findPlayingStream (const StreamConfig &config, const std::s
     const std::string name = StreamProxy::streamNameFromUrl (url, 0);
 
     return (name.empty () ? nullptr : config.findByName (name));
+}
+
+// One of a station list's streams, kept alive along with the list, however long it is held: the
+// dashboard can swap in a new list at any moment.
+static std::shared_ptr<const Stream> holdStream (const std::shared_ptr<const StreamConfig> &streams, const Stream *stream)
+{
+    return ((stream != nullptr) ? std::shared_ptr<const Stream> (streams, stream) : nullptr);
+}
+
+// The same stream, as far as playing it goes, even from different versions of the list.
+static bool sameStream (const std::shared_ptr<const Stream> &a, const std::shared_ptr<const Stream> &b)
+{
+    return (a != nullptr && b != nullptr && a->name == b->name && a->url == b->url);
 }
 
 // Brief if, MIN_TITLE_SECONDS on, a different title is playing. That catches a station ID between
@@ -1359,23 +1381,96 @@ static int handleCommand (int argc, char *argv[])
             }
         }
 
+        // The station list: as loaded at start, then as saved from the dashboard, which swaps in a new
+        // one whole. Each use takes the list current at that moment, and a stream taken from it keeps
+        // that version alive for as long as the stream is held (see holdStream).
+        std::mutex streamsMutex;
+        std::shared_ptr<const StreamConfig> liveStreams = std::make_shared<const StreamConfig> (config);
+
+        auto currentStreams = [&] ()
+        {
+            std::lock_guard<std::mutex> lock (streamsMutex);
+
+            return (liveStreams);
+        };
+
         // What is playing now, shared by the event loop and the song watcher. When holding both,
         // take speakerMutex first.
         std::mutex speakerMutex;                 // serialises SetAVTransportURI callers
         std::mutex stationMutex;
-        const Stream *station = nullptr;
+        std::shared_ptr<const Stream> station;
         std::string speakerUrl;                  // what the speaker was actually given
         std::uint64_t generation = 0;            // the relay's id for this station; 0 when direct
         std::uint64_t handledOffset = 0;         // relay: titles up to here are dealt with
         std::string shownTitle;                  // the song on the display now
         std::uint64_t playEpoch = 0;             // counts plays, even of the station already on
 
-        // For resuming: whether the speaker should be playing what control gave it, and which
-        // preset that was. Cleared by anything the user does: a press, standby, another source.
-        const int savedPreset = loadLastPreset ();
-
+        // For resuming: whether the speaker should be playing what control gave it, and what that
+        // was, by its name, along with its preset. The first is cleared by anything the user does:
+        // a press, standby, another source.
         std::atomic<bool> wantPlaying (false);
-        std::atomic<int> lastPreset (config.findByPreset (savedPreset) != nullptr ? savedPreset : 0);
+        std::mutex lastMutex;                    // lastStream, and saving it
+        std::string lastStream;
+        std::atomic<int> lastPreset (0);
+
+        {
+            int savedPreset = 0;
+            std::string savedName;
+
+            loadLastPlayed (savedPreset, savedName);
+
+            const Stream *last = !savedName.empty () ? config.findByName (savedName) : config.findByPreset (savedPreset);
+
+            if (last != nullptr)
+            {
+                lastStream = last->name;
+                lastPreset = last->preset;
+            }
+        }
+
+        // Notes what has just played as what to bring back, saving it when that changes.
+        auto rememberPlayed = [&] (const Stream &stream)
+        {
+            std::lock_guard<std::mutex> lock (lastMutex);
+
+            if (lastStream == stream.name && lastPreset == stream.preset)
+            {
+                return;
+            }
+
+            lastStream = stream.name;
+            lastPreset = stream.preset;
+
+            saveLastPlayed (stream.preset, stream.name);
+        };
+
+        // What to bring back, as the list has it now; null when nothing has played, or when what
+        // played is no longer in the list.
+        auto lastPlayed = [&] () -> std::shared_ptr<const Stream>
+        {
+            const std::shared_ptr<const StreamConfig> streams = currentStreams ();
+            std::lock_guard<std::mutex> lock (lastMutex);
+
+            return (lastStream.empty () ? nullptr : holdStream (streams, streams->findByName (lastStream)));
+        };
+
+        // control's stream at this location: one in the list, or the one control itself gave the
+        // speaker there, even if it has been renamed or taken out of the list since. Null for
+        // anything else, such as another app's stream.
+        auto streamAt = [&] (const std::string &location) -> std::shared_ptr<const Stream>
+        {
+            const std::shared_ptr<const StreamConfig> streams = currentStreams ();
+
+            if (const Stream *listed = findPlayingStream (*streams, location))
+            {
+                return (holdStream (streams, listed));
+            }
+
+            std::lock_guard<std::mutex> lock (stationMutex);
+
+            return ((station != nullptr && !location.empty () && location == speakerUrl) ? station : nullptr);
+        };
+
         std::atomic<long long> lastPushMs (0);
         std::atomic<long long> lastPlayMs (0);
 
@@ -1385,12 +1480,13 @@ static int handleCommand (int argc, char *argv[])
         std::atomic<int> currentVolumeTarget (-1);
         std::atomic<bool> currentMuted (false);
 
-        // What the speaker last said it is doing: its source (UPNP, STANDBY, BLUETOOTH, ...) and play
-        // status, from its event stream and a look at start. The dashboard shows it, and enables its
-        // play/pause and power buttons by it. Empty until first known.
+        // What the speaker last said it is doing: its source (UPNP, STANDBY, BLUETOOTH, ...), play
+        // status and the stream it is on, from its event stream and a look at start. The dashboard
+        // shows it, and enables its play/pause and power buttons by it. Empty until first known.
         std::mutex speakerStateMutex;
         std::string speakerSource;
         std::string speakerStatus;
+        std::string speakerLocation;
 
         // Raised when the volume or the speaker's state above changes, so the dashboard's held request
         // answers at once. Declared before the dashboard, which waits on it, so it outlives it.
@@ -1482,7 +1578,7 @@ static int handleCommand (int argc, char *argv[])
         // The speaker is paused or stopped on one of control's streams, as after control was
         // restarted: take it over as it is and leave it so, never playing it. Then the remote's Play
         // has the relay to come back to, which starts it on the song now playing.
-        auto adoptPaused = [&] (const Stream *on, const std::string &location, const std::string &status)
+        auto adoptPaused = [&] (const std::shared_ptr<const Stream> &on, const std::string &location, const std::string &status)
         {
             pendingPauseMs = 0;
             wantPlaying = false;
@@ -1496,7 +1592,7 @@ static int handleCommand (int argc, char *argv[])
                 std::lock_guard<std::mutex> lock (stationMutex);
 
                 // Already known: only the flags were out of date, say after an event was missed.
-                if (station == on && speakerUrl == location)
+                if (sameStream (station, on) && speakerUrl == location)
                 {
                     if (proxy.isRunning ())
                     {
@@ -1532,10 +1628,7 @@ static int handleCommand (int argc, char *argv[])
                 pausedConnections = proxy.speakerConnections ();
             }
 
-            if (on->preset > 0 && lastPreset.exchange (on->preset) != on->preset)
-            {
-                saveLastPreset (on->preset);
-            }
+            rememberPlayed (*on);
 
             const bool relayed = !StreamProxy::streamNameFromUrl (location, 0).empty ();
 
@@ -1546,16 +1639,29 @@ static int handleCommand (int argc, char *argv[])
                           : "\n");
         };
 
-        auto playCallback = [&] (int presetId, WebSocketListener::PlayReason reason)
+        auto playCallback = [&] (int presetId, WebSocketListener::PlayReason reason, const std::string &streamName)
         {
             using PlayReason = WebSocketListener::PlayReason;
 
-            // A look at the speaker may come with no preset to bring back.
-            const Stream *stream = (presetId > 0) ? config.findByPreset (presetId) : nullptr;
+            // A press is for a preset, or from the dashboard for a stream by its name. Anything else
+            // but a skip brings back what played last, if anything did: a look at the speaker may
+            // come with nothing to bring back.
+            std::shared_ptr<const Stream> stream;
 
-            if (stream == nullptr && reason == PlayReason::PRESS)
+            if (reason == PlayReason::PRESS)
             {
-                return (false);
+                const std::shared_ptr<const StreamConfig> streams = currentStreams ();
+
+                stream = holdStream (streams, streamName.empty () ? streams->findByPreset (presetId) : streams->findByName (streamName));
+
+                if (stream == nullptr)
+                {
+                    return (false);
+                }
+            }
+            else if (reason != PlayReason::SKIP)
+            {
+                stream = lastPlayed ();
             }
 
             // A skip is within whatever is playing, preset or not, by however many presses came.
@@ -1661,7 +1767,7 @@ static int handleCommand (int argc, char *argv[])
 
                 if (source == "UPNP" && isStreamLocation (speakerNow.location))
                 {
-                    const Stream *on = findPlayingStream (config, speakerNow.location);
+                    const std::shared_ptr<const Stream> on = streamAt (speakerNow.location);
 
                     // Playing, paused or stopped, a stream that is not control's belongs to another app.
                     if (on == nullptr)
@@ -1991,20 +2097,16 @@ static int handleCommand (int argc, char *argv[])
                 }
 
                 // A skip stays on what was playing, which may have no preset of its own.
-                const int playedPreset = (reason == PlayReason::SKIP) ? stream->preset : presetId;
-
-                if (playedPreset > 0 && lastPreset.exchange (playedPreset) != playedPreset)
-                {
-                    saveLastPreset (playedPreset);
-                }
+                rememberPlayed (*stream);
             }
 
             return (played);
         };
 
-        auto presetInfoCallback = [&config] (int presetId, std::string &name)
+        auto presetInfoCallback = [&] (int presetId, std::string &name)
         {
-            const Stream *stream = config.findByPreset (presetId);
+            const std::shared_ptr<const StreamConfig> streams = currentStreams ();
+            const Stream *stream = streams->findByPreset (presetId);
 
             if (stream == nullptr)
             {
@@ -2016,9 +2118,9 @@ static int handleCommand (int argc, char *argv[])
             return (true);
         };
 
-        auto couldExtendCallback = [&config] (int sequence)
+        auto couldExtendCallback = [&] (int sequence)
         {
-            return (config.hasLongerPresetStartingWith (sequence));
+            return (currentStreams ()->hasLongerPresetStartingWith (sequence));
         };
 
         // Relay: push each title when the speaker reaches it, and have the speaker resume exactly
@@ -2060,7 +2162,7 @@ static int handleCommand (int argc, char *argv[])
                     continue;
                 }
 
-                const Stream *mine = nullptr;
+                std::shared_ptr<const Stream> mine;
                 std::string target;
                 std::uint64_t myGeneration = 0;
                 std::uint64_t after = 0;
@@ -2367,7 +2469,7 @@ static int handleCommand (int argc, char *argv[])
         {
             while (!watcherStop)
             {
-                const Stream *mine = nullptr;
+                std::shared_ptr<const Stream> mine;
                 std::string target;
                 std::uint64_t myEpoch = 0;
 
@@ -2546,7 +2648,9 @@ static int handleCommand (int argc, char *argv[])
         callbacks.presetInfo = presetInfoCallback;
         callbacks.couldExtend = couldExtendCallback;
 
-        callbacks.press = [&] ()
+        // A press, of a preset on the remote or of the dashboard's play for a stream. Only atomics and
+        // the relay, so it is called on the dashboard's threads as well as the listener's.
+        auto takePress = [&] ()
         {
             // The press has just stopped the speaker; hold its position there. Whatever it leads
             // to is the user's doing, not something to undo, and it replaces any skip still pending.
@@ -2571,6 +2675,8 @@ static int handleCommand (int argc, char *argv[])
             }
         };
 
+        callbacks.press = takePress;
+
         callbacks.source = [&] (const std::string &source, const std::string &status, const std::string &location)
         {
             {
@@ -2578,6 +2684,16 @@ static int handleCommand (int argc, char *argv[])
 
                 speakerSource = source;
                 speakerStatus = status;
+
+                // An event can leave the stream out; another source has none.
+                if (source != "UPNP")
+                {
+                    speakerLocation.clear ();
+                }
+                else if (!location.empty ())
+                {
+                    speakerLocation = location;
+                }
             }
 
             // Wakes the dashboard once the rest of this has had its say, whichever way it returns.
@@ -2607,7 +2723,7 @@ static int handleCommand (int argc, char *argv[])
 
             if (isStreamLocation (location))
             {
-                onControlStream = (findPlayingStream (config, location) != nullptr);
+                onControlStream = (streamAt (location) != nullptr);
             }
 
             // Another app streaming to it has it now; when that ends, it is not control's to undo.
@@ -2676,20 +2792,18 @@ static int handleCommand (int argc, char *argv[])
             skipSteps += forward ? 1 : -1;
             skipPending = true;
 
-            const int preset = lastPreset;
-
-            g_listener->requestPlay ((preset > 0) ? preset : WebSocketListener::NO_PRESET, WebSocketListener::PlayReason::SKIP);
+            // A skip is within whatever is playing, which the play finds for itself.
+            g_listener->requestPlay (WebSocketListener::NO_PRESET, WebSocketListener::PlayReason::SKIP);
         };
 
         callbacks.unexpectedStop = [&] ()
         {
-            const int preset = lastPreset;
             const bool afterPush = (steadyMilliseconds () - lastPushMs
                                     < std::chrono::duration_cast<std::chrono::milliseconds> (PUSH_BLAME_WINDOW).count ());
 
             settlePause ();
 
-            if (!wantPlaying || pendingPauseMs != 0 || preset == 0 || (!autoResume && !afterPush))
+            if (!wantPlaying || pendingPauseMs != 0 || lastPlayed () == nullptr || (!autoResume && !afterPush))
             {
                 return;
             }
@@ -2697,13 +2811,13 @@ static int handleCommand (int argc, char *argv[])
             Say () << ">>> The speaker stopped by itself" << (afterPush ? " after a song update" : "")
                    << "; starting it again.\n";
 
-            g_listener->requestPlay (preset, WebSocketListener::PlayReason::RESUME_DROP);
+            g_listener->requestPlay (WebSocketListener::NO_PRESET, WebSocketListener::PlayReason::RESUME_DROP);
         };
 
         callbacks.connected = [&] (bool again)
         {
-            const int preset = lastPreset;
-            const int asked = (preset > 0) ? preset : WebSocketListener::NO_PRESET;
+            // The play brings back what played last itself; these only say why it is asked.
+            const int asked = WebSocketListener::NO_PRESET;
 
             // At start-up, look at what the speaker is doing: bring back what was playing last
             // time, or take over a stream of control's that it is paused on.
@@ -2721,9 +2835,9 @@ static int handleCommand (int argc, char *argv[])
             {
                 g_listener->requestPlay (asked, WebSocketListener::PlayReason::RESYNC);
             }
-            else if (wantPlaying && autoResume && preset > 0)
+            else if (wantPlaying && autoResume && lastPlayed () != nullptr)
             {
-                g_listener->requestPlay (preset, WebSocketListener::PlayReason::RESUME_DROP);
+                g_listener->requestPlay (asked, WebSocketListener::PlayReason::RESUME_DROP);
             }
         };
 
@@ -2795,6 +2909,7 @@ static int handleCommand (int argc, char *argv[])
 
                 speakerSource = now.source;
                 speakerStatus = now.status;
+                speakerLocation = (now.source == "UPNP") ? now.location : std::string ();
             }
         }
 
@@ -2839,15 +2954,19 @@ static int handleCommand (int argc, char *argv[])
             auto liveSnapshot = [&] () -> nlohmann::json
             {
                 std::string stationName;
+                std::string streamName;
                 std::string title;
                 std::string source;
                 std::string status;
+                std::string location;
+                std::string last;
                 int stationPreset = 0;
 
                 {
                     std::lock_guard<std::mutex> lock (stationMutex);
 
                     stationName = (station != nullptr) ? station->displayName : std::string ();
+                    streamName = (station != nullptr) ? station->name : std::string ();
                     stationPreset = (station != nullptr) ? station->preset : 0;
                     title = shownTitle;
                 }
@@ -2857,6 +2976,13 @@ static int handleCommand (int argc, char *argv[])
 
                     source = speakerSource;
                     status = speakerStatus;
+                    location = speakerLocation;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock (lastMutex);
+
+                    last = lastStream;
                 }
 
                 const int level = currentVolume.load ();
@@ -2867,12 +2993,15 @@ static int handleCommand (int argc, char *argv[])
 
                 nlohmann::json snapshot {
                     { "station", onOurs ? stationName : std::string () },
+                    { "station_name", onOurs ? streamName : std::string () },
                     { "title", onOurs ? title : std::string () },
                     { "last_preset", lastPreset.load () },
+                    { "last_stream", last },
                     { "want_playing", wantPlaying.load () },
                     { "relay_running", proxy.isRunning () },
                     { "source", source },
-                    { "status", status } };
+                    { "status", status },
+                    { "location", location } };
 
                 // Null until the first /volume read or event, so the dashboard shows nothing rather
                 // than a made-up level.
@@ -2898,7 +3027,77 @@ static int handleCommand (int argc, char *argv[])
             settings.embedded = true;
             settings.defaultDeviceIp = deviceIp;
 
-            webServer = std::make_unique<WebServer> (settings, liveSnapshot, &liveSignal);
+            WebServer::ControlHooks hooks;
+
+            // The play button beside a stream: a press for it, as if it were on a preset of its own.
+            hooks.playStream = [&] (const std::string &name)
+            {
+                const std::shared_ptr<const StreamConfig> streams = currentStreams ();
+                const Stream *stream = streams->findByName (name);
+
+                if (stream == nullptr)
+                {
+                    return (404);
+                }
+
+                Say () << "\n>>> " << stream->displayName << " played from the dashboard\n";
+
+                takePress ();
+                listener.requestPlay (WebSocketListener::NO_PRESET, WebSocketListener::PlayReason::PRESS, name);
+
+                return (0);
+            };
+
+            // A stream list saved from the dashboard, used from now on: the presets, the combos, and
+            // each stream the next time it is played. The one playing carries on from the address it
+            // was given, but shows a new display name and preset at once.
+            hooks.streamsSaved = [&] (const std::string &text)
+            {
+                auto loaded = std::make_shared<StreamConfig> ();
+
+                if (!loaded->loadFromText (text, true))
+                {
+                    return;
+                }
+
+                const std::shared_ptr<const StreamConfig> streams = loaded;
+
+                {
+                    std::lock_guard<std::mutex> lock (streamsMutex);
+
+                    liveStreams = streams;
+                }
+
+                listener.setComboWindowMs (streams->getComboWindowMs ());
+
+                {
+                    std::lock_guard<std::mutex> lock (stationMutex);
+
+                    const Stream *same = (station != nullptr) ? streams->findByName (station->name) : nullptr;
+
+                    if (same != nullptr && same->url == station->url)
+                    {
+                        station = holdStream (streams, same);
+                    }
+                }
+
+                // What to bring back is known by its name, which it keeps; its preset may have moved.
+                {
+                    std::lock_guard<std::mutex> lock (lastMutex);
+
+                    const Stream *last = lastStream.empty () ? nullptr : streams->findByName (lastStream);
+
+                    if (last != nullptr && last->preset != lastPreset)
+                    {
+                        lastPreset = last->preset;
+                        saveLastPlayed (last->preset, last->name);
+                    }
+                }
+
+                liveSignal.notify ();
+            };
+
+            webServer = std::make_unique<WebServer> (settings, liveSnapshot, &liveSignal, hooks);
 
             if (webServer->start ())
             {
@@ -2949,6 +3148,9 @@ int main (int argc, char *argv[])
 {
     // Control mode is long-running, so keep output usable when it is redirected to a file.
     std::cout << std::unitbuf;
+
+    // Once, before any thread: control, the relay and the dashboard all use curl from threads of their own.
+    curl_global_init (CURL_GLOBAL_DEFAULT);
 
     // Where streams.json, devices.json and state.json live: --data-dir <dir> anywhere on the
     // command line, else SOUNDTOUCH_DATA_DIR, else the working directory.

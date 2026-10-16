@@ -1,0 +1,104 @@
+Loaded 9 streams from streams.json
+Preset 1 -> K-LOVE
+Preset 2 -> Air1
+Preset 11 (press 1 then 1, up to 700ms apart) -> K-LOVE 70s
+Preset 12 (press 1 then 2, up to 700ms apart) -> K-LOVE 80s
+Preset 13 (press 1 then 3, up to 700ms apart) -> K-LOVE 90s
+Preset 14 (press 1 then 4, up to 700ms apart) -> K-LOVE 2000s
+Preset 15 (press 1 then 5, up to 700ms apart) -> K-LOVE 2010s
+Preset 111 (press 1 then 1 then 1, up to 700ms apart) -> K-LOVE Christmas
+Default target: zone Office - All, led by 192.168.3.53
+Relay listening on port 8899 for 192.168.3.53, keeping 16 MB of the stream (pauses of up to ~33 min carry on where they stopped, at 64 kbps)
+>>> Volume at start: 11
+Song titles will be pushed to the display as each song is heard.
+Web dashboard on http://0.0.0.0:8087
+
+Connecting to ws://192.168.3.53:8080
+
+CONNECTED
+
+Listening for physical preset buttons. Press Ctrl-C to stop.
+----------------------------------------------------------------------
+EVENT:
+<SoundTouchSdkInfo serverVersion="4" serverBuild="trunk r46330 v4 epdbuild hepdswbld04" />
+----------------------------------------------------------------------
+
+>>> Reconnecting K-LOVE to new relay instance.
+
+Setting K-LOVE stream...
+URL: http://192.168.3.33:8899/stream/klove
+Now playing: Josh Baldwin - There Is Freedom
+
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><skipPreviousEnabled /></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+>>> relay: speaker asked: GET /stream/klove HTTP/1.1 | Host: 192.168.3.33:8899 | User-Agent: Bose/7.22.0 | Accept: */*
+>>> relay: speaker connected, 11.6s behind the station (from the backlog)
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><playStatus>BUFFERING_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+K-LOVE is playing.
+
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">30</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">60</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">90</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">120</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">150</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">180</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+>>> now playing: for KING + COUNTRY - What If I Told You?
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>There Is Freedom</itemName></ContentItem><track>There Is Freedom</track><artist>Josh Baldwin</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>What If I Told You?</itemName></ContentItem><track>What If I Told You?</track><artist>for KING + COUNTRY</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><skipPreviousEnabled /></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>What If I Told You?</itemName></ContentItem><track>What If I Told You?</track><artist>for KING + COUNTRY</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+>>> relay: speaker connection ended after 192.0s, 1589 KB sent: the speaker hung up
+>>> relay: speaker asked: GET /stream/klove HTTP/1.1 | Host: 192.168.3.33:8899 | User-Agent: Bose/7.22.0 | Accept: */*
+>>> relay: speaker connected, 13.3s behind the station (from a set point)
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>What If I Told You?</itemName></ContentItem><track>What If I Told You?</track><artist>for KING + COUNTRY</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><playStatus>BUFFERING_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>What If I Told You?</itemName></ContentItem><track>What If I Told You?</track><artist>for KING + COUNTRY</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">0</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>What If I Told You?</itemName></ContentItem><track>What If I Told You?</track><artist>for KING + COUNTRY</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">30</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>What If I Told You?</itemName></ContentItem><track>What If I Told You?</track><artist>for KING + COUNTRY</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">60</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+EVENT:
+<updates deviceID="2C6B7D45F0D9"><nowPlayingUpdated><nowPlaying deviceID="2C6B7D45F0D9" source="UPNP" sourceAccount="UPnPUserName"><ContentItem source="UPNP" location="http://192.168.3.33:8899/stream/klove" sourceAccount="UPnPUserName" isPresetable="false"><itemName>What If I Told You?</itemName></ContentItem><track>What If I Told You?</track><artist>for KING + COUNTRY</artist><album>K-LOVE</album><stationName></stationName><art artImageStatus="SHOW_DEFAULT_IMAGE" /><time total="0">90</time><playStatus>PLAY_STATE</playStatus><skipPreviousEnabled /><streamType>TRACK_ONDEMAND</streamType></nowPlaying></nowPlayingUpdated></updates>
+----------------------------------------------------------------------
+
+Stopping (SIGTERM); send it again to quit at once.
+
+WebSocket connection closed
+>>> Lost connection to speaker at 192.168.3.53; waiting for reconnection...
+>>> relay: speaker connection ended after 120.0s, 1040 KB sent: the relay is stopping
+
+Stopped.

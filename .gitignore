@@ -1,0 +1,15 @@
+# Build output
+cxstcc
+webtest
+zonetest
+*.o
+*.d
+
+# Python's bytecode cache, from test/web_live_check.py importing test/fake_speaker.py
+__pycache__/
+.zone-live-check-*/
+
+# Written at run time, specific to the machine and speaker
+devices.json
+devices.json.bak
+state.json

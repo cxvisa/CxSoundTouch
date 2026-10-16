@@ -65,14 +65,6 @@ Nothing depends on the Bose cloud, and the speaker's firmware and server setting
 
 Titles, pause and skip need `control --update-track-info`, which is how the service runs it.
 
-**Not supported or not tested yet:**
-
-- Tested only on a SoundTouch 30 (firmware 27.0.6) with internet radio; other models are untested.
-- AirPlay / AirPlay 2 playback uses the speaker's built-in receiver, not a receiver implemented by
-  this project. Availability depends on the speaker's model and firmware
-  ([details](#what-it-has-been-tested-with)).
-- No album art, and changing station takes ~5 s.
-
 **Project scope:** restoring local internet-radio playback and controls is the focus. Integrating
 third-party streaming apps or services, such as Spotify, is **not a current goal**. The AirPlay
 source indicator does not add a Spotify integration or let the dashboard browse or start playback
